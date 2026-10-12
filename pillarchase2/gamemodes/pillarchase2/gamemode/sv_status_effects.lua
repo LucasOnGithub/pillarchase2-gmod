@@ -10,6 +10,20 @@ local HIT_SOUNDS = {
 }
 local HURT_SOUND = "Player/Hurt.wav"
 local BREAK_SOUND = "Player/BrokenBone.wav"
+local DEATH_SCREAM = "Player/DeathScream.mp3"
+
+-- A death is confirmed here (not predicted from incoming damage). The
+-- two abilities mark only their own TakeDamageInfo call; ordinary M1 and
+-- scripted KillPC2 executions do not carry one of these marks.
+hook.Add("PlayerDeath", "PC2_EXEAbilityDeathScream", function(victim)
+    if not IsValid(victim) or victim.PC2EXEExecutionVictim then return end
+
+    local source = victim.PC2EXEAbilityDamageSource
+    if source ~= "too_slow" and source ~= "thorny_grave" then return end
+
+    -- CHAN_AUTO avoids another voice-channel sound replacing the scream.
+    victim:EmitSound(DEATH_SCREAM, 85, 100, 1, CHAN_AUTO)
+end)
 
 local function survivor(ply)
     return IsValid(ply) and ply:IsPlayer()
