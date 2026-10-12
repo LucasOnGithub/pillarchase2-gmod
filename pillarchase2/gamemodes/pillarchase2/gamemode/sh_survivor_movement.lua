@@ -24,6 +24,8 @@ function GM:IsPC2Survivor(ply)
 end
 
 function GM:PlayerSpawn(ply, transition)
+    -- Injury never carries across spawns or returning to survivor form.
+    if SERVER then ply:SetNWBool("PC2_BrokenBone", false) end
     -- Allow the base player class to set its normal model and loadout.
     self.BaseClass.PlayerSpawn(self, ply, transition)
     if not self:IsPC2Survivor(ply) then return end
@@ -91,6 +93,21 @@ hook.Add("SetupMove", "PC2_SurvivorExhaustionSpeed", function(ply, mv, cmd)
     local speed = GAMEMODE.SurvivorWalkSpeed
     if mv:GetMaxSpeed() > speed then mv:SetMaxSpeed(speed) end
     if mv:GetMaxClientSpeed() > speed then mv:SetMaxClientSpeed(speed) end
+end)
+
+-- Apply the 15% broken-bone penalty to BOTH client prediction and
+-- server movement; never permanently overwrite the player's base speeds.
+hook.Add("SetupMove", "PC2_BrokenBoneMovement", function(ply, mv)
+    if not GAMEMODE or not GAMEMODE:IsPC2Survivor(ply) then return end
+    if not ply:Alive() or not ply:GetNWBool("PC2_BrokenBone", false) then return end
+
+    local sprinting = bit.band(mv:GetButtons(), IN_SPEED) ~= 0
+    local normalSpeed = sprinting and GAMEMODE.SurvivorRunSpeed
+        or GAMEMODE.SurvivorWalkSpeed
+    local limit = normalSpeed * 0.85
+
+    if mv:GetMaxSpeed() > limit then mv:SetMaxSpeed(limit) end
+    if mv:GetMaxClientSpeed() > limit then mv:SetMaxClientSpeed(limit) end
 end)
 
 if SERVER then
