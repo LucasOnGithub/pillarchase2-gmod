@@ -217,7 +217,20 @@ local function finishVictim(state)
     -- The custom headless body above replaces it.
     victim.PC2EXEExecutionNoDefaultRagdoll = true
     victim:Freeze(false)
-    victim:Kill()
+    -- A regular Kill() is credited as suicide. Use EXE as the lethal
+    -- attacker while exempting only this final blow from sequence immunity.
+    state.finishing = true
+    local damage = DamageInfo()
+    damage:SetAttacker(IsValid(attacker) and attacker or victim)
+    damage:SetInflictor(IsValid(state.pill) and state.pill
+        or (IsValid(attacker) and attacker or victim))
+    damage:SetDamage(math.max(victim:Health(), 1) + 1000)
+    damage:SetDamageType(DMG_SLASH)
+    victim:TakeDamageInfo(damage)
+    if victim:Alive() then
+        -- Rare cases with other plugins modifying lethal damage.
+        victim:Kill()
+    end
     timer.Simple(0, function()
         if not IsValid(victim) then return end
         local defaultRag = victim:GetRagdollEntity()
@@ -306,7 +319,8 @@ hook.Add("DoPlayerDeath", "PC2_EXEExecutionSuppressDefaultRagdoll",
 -- Keep other damage from breaking the scripted sequence before 2.04.
 hook.Add("EntityTakeDamage", "PC2_EXEExecutionVictimInvulnerable",
     function(target)
-        if target:IsPlayer() and target.PC2EXEExecutionVictim then
+        if target:IsPlayer() and target.PC2EXEExecutionVictim
+            and not target.PC2EXEExecutionVictim.finishing then
             return true
         end
     end)
@@ -353,8 +367,10 @@ hook.Add("PlayerSpawn", "PC2_EXEExecutionRespawnCleanup", function(ply)
     for state in pairs(active) do
         if state.victim == ply or state.attacker == ply then clear(state, false) end
     end
+    local wasBeingExecuted = ply.PC2EXEExecutionVictim ~= nil
+        or ply:GetNWBool("PC2_EXEBeingExecuted", false)
     ply.PC2EXEExecutionNoDefaultRagdoll = nil
     ply.PC2EXEExecutionVictim = nil
     ply:SetNWBool("PC2_EXEBeingExecuted", false)
-    ply:SetNoDraw(false)
+    if wasBeingExecuted then ply:SetNoDraw(false) end
 end)
