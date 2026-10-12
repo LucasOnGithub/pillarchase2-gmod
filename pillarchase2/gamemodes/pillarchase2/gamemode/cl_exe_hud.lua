@@ -5,8 +5,7 @@
 --    player:SetNWFloat("PC2_MaxStamina", value)
 --    player:SetNWInt("PC2_Earnings", value)
 --    player:SetNWInt("PC2_EarningsMax", value)
---    monster:SetNWBool("PC2_IsMonster", true)  -- heartbeat proximity source
--- Health uses player:Health() / player:GetMaxHealth().
+-- Monster health stays server-side and is intentionally hidden from this HUD.
 if SERVER then return end
 
 local PATH = "Server/RoundHandler/GameGui/NewStats/SelfIcon/"
@@ -15,38 +14,22 @@ local STUFF = PATH .. "ViewportFrame/NewStatsWork/Stuff/"
 local art = {
     splash   = Material("Server/RoundHandler/GameGui/NewStats/SelfIcon.png", "smooth"),
     exe      = Material(PATH .. "Renders/EXE.png", "smooth"),
-    ring     = Material(PATH .. "Heart.png", "smooth"),
     currency = Material(PATH .. "Earning.png", "smooth"),
-    heart = {
-        Material(STUFF .. "Heart1.png", "smooth"),
-        Material(STUFF .. "Heart2.png", "smooth"),
-        Material(STUFF .. "Heart3.png", "smooth")
-    },
     stamina = {
         Material(STUFF .. "Stamina1.png", "smooth"),
         Material(STUFF .. "Stamina2.png", "smooth"),
         Material(STUFF .. "Stamina3.png", "smooth")
-    },
-    shock = Material(STUFF .. "HeartShockwave.png", "smooth")
+    }
 }
 
 local WHITE = Color(255, 255, 255)
 local SHADOW = Color(0, 0, 0, 220)
 local STAMINA_YELLOW = Color(255, 187, 62)
-local HEALTH_RED = Color(248, 62, 73)
 local EARNINGS_PINK = Color(250, 39, 152)
-local SOFT_GREY = Color(211, 221, 227)
-local HEALTH_TEXT = {
-    Color(135, 255, 135),
-    Color(255, 225, 120),
-    Color(255, 135, 135)
-}
 
 -- These are local HUD design coordinates in a 358x345 reference layout.
 -- They scale as a group on different screen heights.
 local W, H = 358, 345
-local prevHeartState
-local shockStarted = -100
 local panel
 local cachedScrH
 
@@ -171,7 +154,6 @@ end
 local function createEXEHUD()
     if IsValid(panel) then panel:Remove() end
     cachedScrH = nil
-    prevHeartState = nil
 
     panel = vgui.Create("DPanel")
     panel:SetMouseInputEnabled(false)
@@ -201,15 +183,6 @@ local function createEXEHUD()
         local ply = LocalPlayer()
         if not isEXEMonster(ply) then return end
 
-        local maxHP = math.max(ply:GetMaxHealth(), 1)
-        local hp = math.max(0, ply:Health())
-        local hpRatio = ratio(hp, maxHP)
-        local hpState = damageState(hpRatio)
-        if prevHeartState and hpState > prevHeartState then
-            shockStarted = RealTime()
-        end
-        prevHeartState = hpState
-
         local maxStamina = math.max(ply:GetNWFloat("PC2_MaxStamina", 100), 1)
         local stamina = math.Clamp(ply:GetNWFloat("PC2_Stamina", maxStamina), 0, maxStamina)
         local staminaRatio = ratio(stamina, maxStamina)
@@ -219,49 +192,30 @@ local function createEXEHUD()
         local earnings = math.max(ply:GetNWInt("PC2_Earnings", 0), 0)
         local earningsRatio = ratio(earnings, earningsMax)
 
-        local beat = 0 -- EXE has no survivor proximity heartbeat.
-
         local name = ply:Nick()
         if #name > 18 then name = string.sub(name, 1, 17) .. "..." end
         draw.SimpleTextOutlined(name, "PC2_EXE_StatsRef_Name", S(110), S(99),
             WHITE, TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER, math.max(1, S(1)), SHADOW)
 
-        -- Positions taken from the supplied in-game screenshot:
-        -- stamina above, health to the right, earnings directly underneath.
-        local staminaX, staminaY = 241, 99
-        local healthX, healthY = 305, 157
-        local earningsX, earningsY = 235, 218
+        -- Monster layout:
+        -- stamina replaces the survivor HP meter on the right;
+        -- earnings occupies the old upper stamina position.
+        -- The former bottom earnings circle is intentionally empty.
+        local staminaX, staminaY = 305, 157
+        local earningsX, earningsY = 241, 99
 
-        -- Faint, dark circles show through the gaps in the colorful arcs.
-        draw.RoundedBox(S(37), S(staminaX - 37), S(staminaY - 37),
-            S(74), S(74), Color(10, 11, 13, 150))
-        draw.RoundedBox(S(40), S(healthX - 40), S(healthY - 40),
+        draw.RoundedBox(S(40), S(staminaX - 40), S(staminaY - 40),
             S(80), S(80), Color(10, 11, 13, 150))
         draw.RoundedBox(S(37), S(earningsX - 37), S(earningsY - 37),
             S(74), S(74), Color(10, 11, 13, 150))
 
-        circularMeter(staminaX, staminaY, 37, staminaRatio, STAMINA_YELLOW)
-        circularMeter(healthX, healthY, 40, hpRatio, HEALTH_RED)
+        circularMeter(staminaX, staminaY, 40, staminaRatio, STAMINA_YELLOW)
         circularMeter(earningsX, earningsY, 37, earningsRatio, EARNINGS_PINK)
 
-        -- Artwork stays underneath the numbers, just like PC2.
         centerImage(art.stamina[staminaState], staminaX, staminaY, 36, 42,
             Color(208, 152, 55, 230))
-        centerImage(art.heart[hpState], healthX, healthY, 36 * (1 + beat),
-            44 * (1 + beat))
-
-        local shockAge = RealTime() - shockStarted
-        if shockAge >= 0 and shockAge < 0.4 then
-            local t = shockAge / 0.4
-            local size = 42 + t * 96
-            surface.SetMaterial(art.shock)
-            surface.SetDrawColor(255, 110, 110, math.floor((1 - t) * 53))
-            surface.DrawTexturedRectRotated(S(healthX), S(healthY), S(size), S(size), t * 180)
-        end
-
         centerImage(art.currency, earningsX, earningsY, 58, 58)
         showCount(stamina, staminaX, staminaY + 5, Color(255, 218, 145))
-        showCount(hp, healthX, healthY + 4, HEALTH_TEXT[hpState])
         showCount(earnings, earningsX, earningsY + 5, WHITE)
 
         -- The PC2 XP slot is included visually for layout accuracy only.
