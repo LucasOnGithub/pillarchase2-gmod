@@ -359,7 +359,7 @@ pk_pills.register(ID, {
     model = MODEL,
     -- Gesture layers require an anim-type puppet (BaseAnimatingOverlay).
     puppetClass = "pc2_exe_puppet",
-    health = 1000,
+    health = 9999,
     hull = Vector(30, 30, 90),
     duckBy = 0,
     jumpPower = 0,
