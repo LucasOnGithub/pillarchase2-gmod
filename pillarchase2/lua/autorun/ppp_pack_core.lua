@@ -43,3 +43,8 @@ include("ppp_include/pill_360_noscope.lua")
 pk_pills.packStart("Jake","jake","icon16/box.png")
 
 include("ppp_include/pill_jake.lua")
+
+-- Restore the missing EXE registration in the standalone addon layout too.
+-- Bundled gamemode users don't need this file; both install layouts work.
+pk_pills.packStart("Pillar Chase 2", "pc2", "icon16/user.png")
+include("ppp_include/pill_pc2_exe.lua")

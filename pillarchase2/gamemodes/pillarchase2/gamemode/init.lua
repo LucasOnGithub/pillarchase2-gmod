@@ -7,3 +7,4 @@ AddCSLuaFile("cl_survivor_hud.lua")
 AddCSLuaFile("cl_stamina.lua")
 
 include("shared.lua")
+include("pc2_pills/init.lua")
