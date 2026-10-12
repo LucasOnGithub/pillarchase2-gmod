@@ -83,7 +83,8 @@ local function isEXE(ent)
     return IsValid(ent) and ent.GetPillForm and ent:GetPillForm() == ID
 end
 
--- Prune destroyed traps, preserving room for up to five active traps.
+-- Prune destroyed traps; keep the surviving entries in placement order.
+-- New traps evict the oldest entry when five already exist.
 -- Trap entities also refresh the counter immediately upon removal.
 local function activeTrapCount(ent)
     local traps = ent.PC2_EXETraps or {}
@@ -242,7 +243,8 @@ local function thornyGrave(ply, ent)
     if now < (ent.PC2_EXENextThorny or 0)
         or now < (ent.PC2_EXEBusyUntil or 0)
         or now < (ent.PC2_EXETooSlowUntil or 0) then return end
-    if activeTrapCount(ent) >= MAX_ACTIVE_TRAPS then return end
+    -- A full trap set does not block casting. On successful placement,
+    -- the oldest existing trap will be replaced.
     -- Cooldown is assigned only AFTER the trap actually spawns.
     -- Source model's trap sequence: 122 frames at 60 FPS (~2.03 sec),
     -- with PlantSeed at cycle .537 (~1.09 sec).
@@ -263,8 +265,6 @@ local function thornyGrave(ply, ent)
     -- The Nextbot creates its trap at PlantSeed (left hand animation event).
     timer.Simple(TRAP_PLACE_DELAY, function()
         if not isEXE(ent) or not ply:Alive() then return end
-        if activeTrapCount(ent) >= MAX_ACTIVE_TRAPS then return end
-
         local puppet = ent:GetPuppet()
         local spawnPos = ply:GetPos() + ply:GetForward() * 25 + Vector(0, 0, 15)
         if IsValid(puppet) then
@@ -292,8 +292,19 @@ local function thornyGrave(ply, ent)
         trap:SetNWEntity("PC2_EXEPill", ent)
         trap:Spawn()
         if not IsValid(trap) then return end
+
+        -- Evict oldest first, but ONLY after the new trap successfully
+        -- spawns. Removing it from the FIFO list before calling Remove()
+        -- avoids re-entrant OnRemove callbacks changing the wrong slot.
+        -- Traps captured by this player also release them on removal.
+        activeTrapCount(ent)
+        while #ent.PC2_EXETraps >= MAX_ACTIVE_TRAPS do
+            local oldest = table.remove(ent.PC2_EXETraps, 1)
+            if IsValid(oldest) then oldest:Remove() end
+        end
+
         table.insert(ent.PC2_EXETraps, trap)
-        ent:SetNWInt("PC2_EXE_TrapCount", activeTrapCount(ent))
+        activeTrapCount(ent)
         ent:DeleteOnRemove(trap)
 
         -- Cooldown begins at the actual placement time, not key press.
@@ -956,12 +967,9 @@ else
             local x = x0 + (i - 1) * (size + gap)
             local timeLeft = math.max(0, hudFloat(ply, pill, ability.readyTime) - CurTime())
             local activeLeft = math.max(0, hudFloat(ply, pill, ability.activeTime) - CurTime())
-            local trapCount = isEXE(pill)
-                and pill:GetNWInt("PC2_EXE_TrapCount", ply:GetNWInt("PC2_EXE_TrapCount", 0))
-                or ply:GetNWInt("PC2_EXE_TrapCount", 0)
-            local fullTraps = ability.icon == "thorny"
-                and trapCount >= MAX_ACTIVE_TRAPS
-            local ready = timeLeft <= 0 and activeLeft <= 0 and not fullTraps
+            -- Five traps no longer puts Thorny Grave into a disabled
+            -- state; placing another replaces the oldest trap instead.
+            local ready = timeLeft <= 0 and activeLeft <= 0
             local imageState = ready and 1 or 2
             local texture = icons[ability.icon][imageState]
 
