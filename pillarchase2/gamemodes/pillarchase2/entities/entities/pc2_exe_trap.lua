@@ -142,7 +142,16 @@ function ENT:Think()
             dmg:SetInflictor(self)
             dmg:SetDamage(DAMAGE)
             dmg:SetDamageType(DMG_GENERIC)
+            -- PlayerDeath runs inside TakeDamageInfo. Tag this specific
+            -- trap tick so only a lethal Thorny Grave hit screams.
+            local marked = victim:IsPlayer()
+            if marked then
+                victim.PC2EXEAbilityDamageSource = "thorny_grave"
+            end
             victim:TakeDamageInfo(dmg)
+            if marked and IsValid(victim) then
+                victim.PC2EXEAbilityDamageSource = nil
+            end
         end
     end
 
