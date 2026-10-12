@@ -16,6 +16,9 @@ local CHARGE_DURATION = 2.30
 local CHARGE_RECOVERY = 0.60
 local CHARGE_COOLDOWN = 15
 local TRAP_COOLDOWN = 4.5
+local ABILITY_COOLDOWN_OFFSET = 0.2
+local TRAP_PLACE_DELAY = (122 / 60) * 0.5371900797
+local TRAP_UNFREEZE_DELAY = 0.2
 local MAX_ACTIVE_TRAPS = 5
 
 -- Unlike survivor stamina, EXE has NO winded state.
@@ -228,10 +231,10 @@ local function tooSlow(ply, ent)
         or now < (ent.PC2_EXEBusyUntil or 0)
         or now < (ent.PC2_EXETooSlowUntil or 0) then return end
 
-    -- The charge animation and high-speed movement last exactly 2.30s.
-    -- Cooldown starts from the end of that window, not from key press.
+    -- Do not start the 15s cooldown until 0.2s after EXE slows down.
+    -- A successful grab can end this charge earlier than its full duration.
     ent.PC2_EXETooSlowUntil = now + CHARGE_DURATION
-    ent.PC2_EXENextTooSlow = ent.PC2_EXETooSlowUntil + CHARGE_COOLDOWN
+    ent.PC2_EXENextTooSlow = 0
     ent.PC2_EXETooSlowGrabbed = false
     ent.PC2_EXERecoveryUntil = 0
     ent:SetNWFloat("PC2_EXE_RecoveryUntil", 0)
@@ -249,7 +252,7 @@ local function thornyGrave(ply, ent)
         or now < (ent.PC2_EXEBusyUntil or 0)
         or now < (ent.PC2_EXETooSlowUntil or 0) then return end
     if activeTrapCount(ent) >= MAX_ACTIVE_TRAPS then return end
-    ent.PC2_EXENextThorny = now + TRAP_COOLDOWN
+    -- Cooldown is assigned only AFTER the trap actually spawns.
     -- Source model's trap sequence: 122 frames at 60 FPS (~2.03 sec),
     -- with PlantSeed at cycle .537 (~1.09 sec).
     ent.PC2_EXEBusyUntil = now + 122 / 60
@@ -257,11 +260,17 @@ local function thornyGrave(ply, ent)
     ent:SetNWFloat("PC2_EXE_TrapCastingUntil", ent.PC2_EXEBusyUntil)
     ply:SetNWFloat("PC2_EXE_ThornyReady", ent.PC2_EXENextThorny)
     ply:SetNWFloat("PC2_EXE_TrapCastingUntil", ent.PC2_EXEBusyUntil)
+    -- Immobilize EXE from cast start through 0.2s after placement.
+    -- Timeout also guarantees release if placement fails.
+    ent.PC2_EXETrapFreezeUntil = now + TRAP_PLACE_DELAY + TRAP_UNFREEZE_DELAY
+    ent:SetNWFloat("PC2_EXE_TrapFreezeUntil", ent.PC2_EXETrapFreezeUntil)
+    ply:SetNWFloat("PC2_EXE_TrapFreezeUntil", ent.PC2_EXETrapFreezeUntil)
+    ply:Freeze(true)
     ent:PillSound("deploy")
     animate(ent, "trap")
 
     -- The Nextbot creates its trap at PlantSeed (left hand animation event).
-    timer.Simple((122 / 60) * 0.5371900797, function()
+    timer.Simple(TRAP_PLACE_DELAY, function()
         if not isEXE(ent) or not ply:Alive() then return end
         if activeTrapCount(ent) >= MAX_ACTIVE_TRAPS then return end
 
@@ -295,6 +304,15 @@ local function thornyGrave(ply, ent)
         table.insert(ent.PC2_EXETraps, trap)
         ent:SetNWInt("PC2_EXE_TrapCount", activeTrapCount(ent))
         ent:DeleteOnRemove(trap)
+
+        -- Cooldown begins at the actual placement time, not key press.
+        local placedAt = CurTime()
+        ent.PC2_EXENextThorny = placedAt + TRAP_COOLDOWN
+        ent:SetNWFloat("PC2_EXE_ThornyReady", ent.PC2_EXENextThorny)
+        ply:SetNWFloat("PC2_EXE_ThornyReady", ent.PC2_EXENextThorny)
+        ent.PC2_EXETrapFreezeUntil = placedAt + TRAP_UNFREEZE_DELAY
+        ent:SetNWFloat("PC2_EXE_TrapFreezeUntil", ent.PC2_EXETrapFreezeUntil)
+        ply:SetNWFloat("PC2_EXE_TrapFreezeUntil", ent.PC2_EXETrapFreezeUntil)
     end)
 end
 
@@ -305,6 +323,10 @@ local function tickTooSlow(ply, ent, now)
     for _, victim in ipairs(getVictims(ply, ent, 70, -0.25)) do
         ent.PC2_EXETooSlowGrabbed = true
         ent.PC2_EXETooSlowUntil = 0
+        -- Grab interrupts the charge; start the same delayed cooldown here.
+        ent.PC2_EXENextTooSlow = now + ABILITY_COOLDOWN_OFFSET + CHARGE_COOLDOWN
+        ent:SetNWFloat("PC2_EXE_TooSlowReady", ent.PC2_EXENextTooSlow)
+        ply:SetNWFloat("PC2_EXE_TooSlowReady", ent.PC2_EXENextTooSlow)
         -- Being interrupted by a successful grab also ends the charge
         -- and applies the same 0.60-second no-sprint recovery.
         ent.PC2_EXERecoveryUntil = now + CHARGE_RECOVERY
@@ -418,6 +440,7 @@ pk_pills.register(ID, {
             ent.PC2_EXENextDrain = 0
             ent.PC2_EXENextRegen = 0
             ply.PC2EXERawSprintHeld = false
+            ply.PC2EXESprintReleaseRequired = false
             ply:SetNWFloat("PC2_Stamina", STAMINA_MAX)
             ply:SetNWFloat("PC2_MaxStamina", STAMINA_MAX)
             ply:SetNWBool("PC2_Exhausted", false)
@@ -433,11 +456,12 @@ pk_pills.register(ID, {
             ent:SetNWFloat("PC2_EXE_TooSlowReady", 0)
             ent:SetNWFloat("PC2_EXE_ThornyReady", 0)
             ent:SetNWFloat("PC2_EXE_TrapCastingUntil", 0)
+            ent:SetNWFloat("PC2_EXE_TrapFreezeUntil", 0)
             ent:SetNWFloat("PC2_EXE_SniffUntil", 0)
             for _, key in ipairs({
                 "PC2_EXE_TooSlowUntil", "PC2_EXE_TooSlowReady",
                 "PC2_EXE_ThornyReady", "PC2_EXE_TrapCastingUntil",
-                "PC2_EXE_SniffUntil"
+                "PC2_EXE_TrapFreezeUntil", "PC2_EXE_SniffUntil"
             }) do
                 ply:SetNWFloat(key, 0)
             end
@@ -503,8 +527,8 @@ pk_pills.register(ID, {
     end
 })
 
--- EXE stamina uses a separate rule set from survivors.
--- It never sets a winded state or requires releasing Shift to run again.
+-- EXE stamina has no winded timer, but reaching zero requires releasing
+-- Shift before a subsequent press can resume sprinting.
 local function tickEXEStamina(ply, ent, now)
     local value = math.Clamp(ent.PC2_EXEStamina or STAMINA_MAX, 0, STAMINA_MAX)
     local charging = now < (ent.PC2_EXETooSlowUntil or 0)
@@ -525,6 +549,10 @@ local function tickEXEStamina(ply, ent, now)
         local steps = 0
         while now >= nextDrain and value > 0 and steps < 10 do
             value = math.max(0, value - STAMINA_DRAIN)
+            if value <= 0 and not ply.PC2EXESprintReleaseRequired then
+                ply.PC2EXESprintReleaseRequired = true
+                ply:SetNWBool("PC2_SprintReleaseRequired", true)
+            end
             nextDrain = nextDrain + STAMINA_DRAIN_INTERVAL
             steps = steps + 1
         end
@@ -572,12 +600,21 @@ hook.Add("StartCommand", "PC2_EXE_StaminaInput", function(ply, cmd)
     local ent = pk_pills.getMappedEnt(ply)
     if not isEXE(ent) then return end
 
-    if SERVER then ply.PC2EXERawSprintHeld = cmd:KeyDown(IN_SPEED) end
+    local shiftHeld = cmd:KeyDown(IN_SPEED)
+    if SERVER then
+        ply.PC2EXERawSprintHeld = shiftHeld
+        if ply.PC2EXESprintReleaseRequired and not shiftHeld then
+            ply.PC2EXESprintReleaseRequired = false
+            ply:SetNWBool("PC2_SprintReleaseRequired", false)
+        end
+    end
 
     local chargeActive = isCharging(ent)
     local stamina = SERVER and (ent.PC2_EXEStamina or STAMINA_MAX)
         or ply:GetNWFloat("PC2_Stamina", STAMINA_MAX)
-    if stamina <= 0 and not chargeActive then
+    local mustRelease = SERVER and ply.PC2EXESprintReleaseRequired
+        or ply:GetNWBool("PC2_SprintReleaseRequired", false)
+    if (stamina <= 0 or mustRelease) and not chargeActive then
         cmd:RemoveKey(IN_SPEED)
     end
 end)
@@ -590,7 +627,9 @@ hook.Add("SetupMove", "PC2_EXE_EmptyStaminaWalk", function(ply, mv)
 
     local stamina = SERVER and (ent.PC2_EXEStamina or STAMINA_MAX)
         or ply:GetNWFloat("PC2_Stamina", STAMINA_MAX)
-    if stamina > 0 then return end
+    local mustRelease = SERVER and ply.PC2EXESprintReleaseRequired
+        or ply:GetNWBool("PC2_SprintReleaseRequired", false)
+    if stamina > 0 and not mustRelease then return end
     local speed = ply:GetWalkSpeed()
     if mv:GetMaxSpeed() > speed then mv:SetMaxSpeed(speed) end
     if mv:GetMaxClientSpeed() > speed then mv:SetMaxClientSpeed(speed) end
@@ -644,6 +683,10 @@ if SERVER then
                 local chargeUntil = ent.PC2_EXETooSlowUntil or 0
                 if chargeUntil > 0 and now >= chargeUntil then
                     ent.PC2_EXETooSlowUntil = 0
+                    ent.PC2_EXENextTooSlow =
+                        chargeUntil + ABILITY_COOLDOWN_OFFSET + CHARGE_COOLDOWN
+                    ent:SetNWFloat("PC2_EXE_TooSlowReady", ent.PC2_EXENextTooSlow)
+                    ply:SetNWFloat("PC2_EXE_TooSlowReady", ent.PC2_EXENextTooSlow)
                     ent.PC2_EXERecoveryUntil = chargeUntil + CHARGE_RECOVERY
                     ent:SetNWFloat("PC2_EXE_TooSlowUntil", 0)
                     ply:SetNWFloat("PC2_EXE_TooSlowUntil", 0)
@@ -678,6 +721,15 @@ if SERVER then
 
                 tickEXEStamina(ply, ent, now)
 
+                -- Always release the trap freeze, including failed spawns.
+                local trapFreeze = ent.PC2_EXETrapFreezeUntil or 0
+                if trapFreeze > 0 and now >= trapFreeze then
+                    ent.PC2_EXETrapFreezeUntil = 0
+                    ent:SetNWFloat("PC2_EXE_TrapFreezeUntil", 0)
+                    ply:SetNWFloat("PC2_EXE_TrapFreezeUntil", 0)
+                    ply:Freeze(false)
+                end
+
                 if now >= (ent.PC2_EXESniffStart or 0) then
                     ent.PC2_EXESniffStart = now + 12
                     ent:SetNWFloat("PC2_EXE_SniffUntil", now + 2)
@@ -691,10 +743,12 @@ if SERVER then
                     ply:SetNWString("PC2_MonsterForm", "")
                     ply:SetNWEntity("PC2_ActiveMonsterPill", NULL)
                     ply:SetNWInt("PC2_EXE_TrapCount", 0)
+                    ply:SetNWBool("PC2_SprintReleaseRequired", false)
+                    ply.PC2EXESprintReleaseRequired = false
                     for _, key in ipairs({
                         "PC2_EXE_TooSlowUntil", "PC2_EXE_TooSlowReady",
                         "PC2_EXE_ThornyReady", "PC2_EXE_TrapCastingUntil",
-                        "PC2_EXE_SniffUntil"
+                        "PC2_EXE_TrapFreezeUntil", "PC2_EXE_SniffUntil"
                     }) do
                         ply:SetNWFloat(key, 0)
                     end
@@ -778,10 +832,10 @@ else
     })
 
     local abilityCards = {
-        { name = "TOO SLOW", key = "1", icon = "tooSlow",
+        { name = "TOO SLOW", icon = "tooSlow",
             readyTime = "PC2_EXE_TooSlowReady",
             activeTime = "PC2_EXE_TooSlowUntil" },
-        { name = "THORNY GRAVE", key = "2", icon = "thorny",
+        { name = "THORNY GRAVE", icon = "thorny",
             readyTime = "PC2_EXE_ThornyReady",
             activeTime = "PC2_EXE_TrapCastingUntil" }
     }
@@ -857,10 +911,6 @@ else
                     TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
             end
 
-            draw.SimpleTextOutlined(ability.key, "PC2_EXEAbility",
-                x + 5, y + 6, color_white,
-                TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP, 1, Color(0, 0, 0))
-
             -- Count down IN THE CENTER of the icon, not beneath it.
             -- Ready abilities deliberately display no READY label.
             if timeLeft > 0 then
@@ -871,13 +921,6 @@ else
                     2, Color(0, 0, 0, 240))
             end
 
-            if ability.icon == "thorny" then
-                draw.SimpleTextOutlined(string.format("%d/%d", trapCount, MAX_ACTIVE_TRAPS),
-                    "PC2_EXEAbilitySmall",
-                    x + size / 2, y + size - 6,
-                    color_white, TEXT_ALIGN_CENTER, TEXT_ALIGN_BOTTOM,
-                    1, Color(0, 0, 0, 230))
-            end
         end
     end)
 
