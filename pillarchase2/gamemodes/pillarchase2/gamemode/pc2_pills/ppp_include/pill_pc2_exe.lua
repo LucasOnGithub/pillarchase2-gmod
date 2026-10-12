@@ -15,6 +15,15 @@ local CHARGE_SPEED = 28.5 * SOURCE_UNITS_PER_STUD
 local CHARGE_DURATION = 2.30
 local CHARGE_RECOVERY = 0.60
 local CHARGE_COOLDOWN = 15
+-- A connected Too Slow grab is a fully timed bite, not a single delayed hit.
+local GRAB_ANIM_DURATION = 210 / 60 -- full 210-frame bite sequence (3.5s)
+local GRAB_END_PAUSE = 0.60 -- additional stationary ending (0.6s)
+local GRAB_FIRST_HIT_AT = 0.75
+local GRAB_FIRST_HIT_DAMAGE = 10
+local GRAB_BITE_AT = 1.50
+local GRAB_BITE_DAMAGE = 40
+local GRAB_VICTIM_RELEASE_AT = GRAB_BITE_AT + 0.50
+local GRAB_MONSTER_RELEASE_AT = GRAB_ANIM_DURATION + GRAB_END_PAUSE
 local TRAP_COOLDOWN = 4.5
 local ABILITY_COOLDOWN_OFFSET = 0.2
 local TRAP_PLACE_DELAY = (122 / 60) * 0.5371900797
@@ -66,24 +75,9 @@ local function offsetFromBone(puppet, boneInfo, viewAngles, fallback)
         + Vector(0, 0, boneInfo[4])
 end
 
--- Too Slow's bite damage still supports the legacy addon setting.
--- EXE M1 is fixed at 45, regardless of archived/legacy damage ConVars.
-local FALLBACK = {
-    bite = 70
-}
-local function getSetting(key, sourceName)
-    local source = GetConVar(sourceName)
-    if source then return source:GetFloat() end
-    local cv = GetConVar("pc2_exe_" .. key)
-    return cv and cv:GetFloat() or FALLBACK[key]
-end
-
-if SERVER then
-    CreateConVar("pc2_exe_bite", tostring(FALLBACK.bite), FCVAR_ARCHIVE,
-        "EXE Too Slow grab damage when _TooSlowDamage is absent.")
-    -- Ability buttons and RMB are now handled server-side with
-    -- PlayerButtonDown / KeyPress, like the Bendy Redrawn pill.
-end
+-- M1 always deals 45; Too Slow's grab deals 10 + 40 at fixed timestamps.
+-- Ability buttons and RMB are handled server-side with
+-- PlayerButtonDown / KeyPress, like the Bendy Redrawn pill.
 
 local function isEXE(ent)
     return IsValid(ent) and ent.GetPillForm and ent:GetPillForm() == ID
@@ -307,38 +301,110 @@ local function thornyGrave(ply, ent)
 end
 
 -- The original Too Slow scans victims within ~70 units for its grab.
+-- All grab stages use one server-owned timeline so they cannot overlap,
+-- repeat their damage, or leave players permanently frozen.
+local activeGrabs = {}
+
+local function releaseGrabVictim(state)
+    if state.victimReleased then return end
+    state.victimReleased = true
+    if IsValid(state.victim) and state.victim:IsPlayer() then
+        state.victim:Freeze(false)
+    end
+end
+
+local function finishGrab(ent, state)
+    if state.finished then return end
+    state.finished = true
+    activeGrabs[ent] = nil
+    if IsValid(ent) and ent.PC2_EXEGrabState == state then
+        ent.PC2_EXEGrabState = nil
+        ent.PC2_EXEGrabFreezeUntil = 0
+        ent:SetNWFloat("PC2_EXE_GrabFreezeUntil", 0)
+    end
+    releaseGrabVictim(state)
+    if IsValid(state.attacker) then
+        state.attacker:Freeze(false)
+        state.attacker:SetNWFloat("PC2_EXE_GrabFreezeUntil", 0)
+    end
+end
+
 local function tickTooSlow(ply, ent, now)
     if now >= (ent.PC2_EXETooSlowUntil or 0)
-        or ent.PC2_EXETooSlowGrabbed then return end
+        or ent.PC2_EXETooSlowGrabbed or ent.PC2_EXEGrabState then return end
     for _, victim in ipairs(getVictims(ply, ent, 70, -0.25)) do
         ent.PC2_EXETooSlowGrabbed = true
         ent.PC2_EXETooSlowUntil = 0
-        -- Grab interrupts the charge; start the same delayed cooldown here.
+
+        -- The charge stops on contact; cooldown still begins 0.2 seconds
+        -- after the grab, as it did before.
         ent.PC2_EXENextTooSlow = now + ABILITY_COOLDOWN_OFFSET + CHARGE_COOLDOWN
         ent:SetNWFloat("PC2_EXE_TooSlowReady", ent.PC2_EXENextTooSlow)
         ply:SetNWFloat("PC2_EXE_TooSlowReady", ent.PC2_EXENextTooSlow)
-        -- Being interrupted by a successful grab also ends the charge
-        -- and applies the same 0.60-second no-sprint recovery.
-        ent.PC2_EXERecoveryUntil = now + CHARGE_RECOVERY
-        ent:SetNWFloat("PC2_EXE_RecoveryUntil", ent.PC2_EXERecoveryUntil)
-        -- Bite clip: 210 frames @ 60 FPS; its named Bite and BiteEnd
-        -- events fire at cycles ~0.531 and ~0.612 respectively.
-        ent.PC2_EXEBusyUntil = now + 210 / 60 * 0.6125
         ent:SetNWFloat("PC2_EXE_TooSlowUntil", 0)
         ply:SetNWFloat("PC2_EXE_TooSlowUntil", 0)
+
+        -- Keep EXE stationary for the entire 3.5s bite animation plus
+        -- a 0.6s ending. The previous recovery clock had been starting
+        -- during the grab instead of after the animation.
+        local finishAt = now + GRAB_MONSTER_RELEASE_AT
+        ent.PC2_EXEBusyUntil = finishAt
+        ent.PC2_EXEGrabFreezeUntil = finishAt
+        ent:SetNWFloat("PC2_EXE_GrabFreezeUntil", finishAt)
+        ply:SetNWFloat("PC2_EXE_GrabFreezeUntil", finishAt)
+        ent.PC2_EXERecoveryUntil = finishAt + CHARGE_RECOVERY
+        ent:SetNWFloat("PC2_EXE_RecoveryUntil", ent.PC2_EXERecoveryUntil)
+
+        local state = {
+            attacker = ply,
+            victim = victim,
+            started = now,
+            firstHitAt = now + GRAB_FIRST_HIT_AT,
+            biteAt = now + GRAB_BITE_AT,
+            victimReleaseAt = now + GRAB_VICTIM_RELEASE_AT,
+            monsterReleaseAt = finishAt
+        }
+        ent.PC2_EXEGrabState = state
+        activeGrabs[ent] = state
+
+        ply:Freeze(true)
+        if victim:IsPlayer() then victim:Freeze(true) end
         ent:PillSound("grab")
         animate(ent, "bite")
-        if victim:IsPlayer() then victim:Freeze(true) end
-        timer.Simple(210 / 60 * 0.53110045, function()
-            if not isEXE(ent) or not IsValid(victim) then return end
-            damage(ply, ent, victim, getSetting("bite", "_TooSlowDamage"))
-        end)
-        timer.Simple(210 / 60 * 0.61244017, function()
-            if IsValid(victim) and victim:IsPlayer() then
-                victim:Freeze(false)
-            end
-        end)
         break
+    end
+end
+
+-- The first hit is 10 damage at 0.75s; the actual bite is 40 at 1.50s.
+-- The victim releases at 2.00s (0.5 after bite); EXE remains frozen
+-- through the full animation and extra 0.60-second ending (4.10s total).
+local function tickActiveGrabs(now)
+    for ent, state in pairs(activeGrabs) do
+        local attacker = state.attacker
+        if not isEXE(ent) or not IsValid(attacker) or not attacker:Alive()
+            or pk_pills.getMappedEnt(attacker) ~= ent then
+            -- Death, unmorph, and disconnect must not strand the victim.
+            finishGrab(ent, state)
+        else
+            if not state.firstHitDone and now >= state.firstHitAt then
+                state.firstHitDone = true
+                if enemy(attacker, state.victim) then
+                    damage(attacker, ent, state.victim, GRAB_FIRST_HIT_DAMAGE)
+                end
+            end
+            if not state.biteDone and now >= state.biteAt then
+                state.biteDone = true
+                if enemy(attacker, state.victim) then
+                    damage(attacker, ent, state.victim, GRAB_BITE_DAMAGE)
+                end
+            end
+            if now >= state.victimReleaseAt then
+                releaseGrabVictim(state)
+            end
+            if now >= state.monsterReleaseAt then
+                finishGrab(ent, state)
+            end
+        end
     end
 end
 
@@ -442,6 +508,10 @@ pk_pills.register(ID, {
             ent.PC2_EXESpeedBoostUntil = 0
             ent.PC2_EXETooSlowUntil = 0
             ent.PC2_EXERecoveryUntil = 0
+            ent.PC2_EXEGrabState = nil
+            ent.PC2_EXEGrabFreezeUntil = 0
+            ent:SetNWFloat("PC2_EXE_GrabFreezeUntil", 0)
+            ply:SetNWFloat("PC2_EXE_GrabFreezeUntil", 0)
             ent:SetNWFloat("PC2_EXE_RecoveryUntil", 0)
             ent:SetNWFloat("PC2_EXE_TooSlowReady", 0)
             ent:SetNWFloat("PC2_EXE_ThornyReady", 0)
@@ -657,6 +727,7 @@ end)
 if SERVER then
     hook.Add("Think", "PC2_EXEPillServer", function()
         local now = CurTime()
+        tickActiveGrabs(now)
         for _, ply in ipairs(player.GetAll()) do
             local ent = pk_pills.getMappedEnt(ply)
             if isEXE(ent) and ply:Alive() then
@@ -718,7 +789,9 @@ if SERVER then
                     ent.PC2_EXETrapFreezeUntil = 0
                     ent:SetNWFloat("PC2_EXE_TrapFreezeUntil", 0)
                     ply:SetNWFloat("PC2_EXE_TrapFreezeUntil", 0)
-                    ply:Freeze(false)
+                    if not ent.PC2_EXEGrabState then
+                        ply:Freeze(false)
+                    end
                 end
 
                 if now >= (ent.PC2_EXESniffStart or 0) then
@@ -739,7 +812,8 @@ if SERVER then
                     for _, key in ipairs({
                         "PC2_EXE_TooSlowUntil", "PC2_EXE_TooSlowReady",
                         "PC2_EXE_ThornyReady", "PC2_EXE_TrapCastingUntil",
-                        "PC2_EXE_TrapFreezeUntil", "PC2_EXE_SniffUntil"
+                        "PC2_EXE_TrapFreezeUntil", "PC2_EXE_SniffUntil",
+                        "PC2_EXE_GrabFreezeUntil"
                     }) do
                         ply:SetNWFloat(key, 0)
                     end
