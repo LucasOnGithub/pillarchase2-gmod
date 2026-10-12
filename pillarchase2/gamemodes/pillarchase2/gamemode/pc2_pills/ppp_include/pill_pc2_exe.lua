@@ -535,6 +535,7 @@ local function tickEXEStamina(ply, ent, now)
         and not ent.PC2_EXETooSlowGrabbed
     local recovering = now < (ent.PC2_EXERecoveryUntil or 0)
     local sprinting = value > 0 and not charging and not recovering
+        and not ply.PC2EXESprintReleaseRequired
         and ply.PC2EXERawSprintHeld == true
         and ply:OnGround() and not ply:Crouching()
         and ply:GetMoveType() == MOVETYPE_WALK
