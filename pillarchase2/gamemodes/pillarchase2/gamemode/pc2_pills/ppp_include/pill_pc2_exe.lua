@@ -295,8 +295,8 @@ pk_pills.register(ID, {
     -- Bone entry format from the supplied code:
     -- { bone name, forward, right, vertical } (Source units).
     -- EXE has UpperTorso rather than a bone literally named "Spine".
-    ThirdPersonBone = { "UpperTorso", 0, 23, 7 },
-    FirstPersonBone = { "Head", 43, 0, 8 },
+    ThirdPersonBone = { "UpperTorso", 0, 23, 23 },
+    FirstPersonBone = { "Head", 43, 0, 2 },
     -- Original possession camera remains 115 Source units behind EXE.
     -- RMB toggles first-person and the shoulder/spine third-person view.
     camera = {
