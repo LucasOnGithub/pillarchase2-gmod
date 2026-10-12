@@ -6,6 +6,15 @@ local ID = "pc2_exe"
 local MODEL = "models/noodles/pillarchase2/exe.mdl"
 local TRAP = "pc2_exe_trap"
 
+-- Same Roblox-stud conversion used by sh_survivor_movement.lua:
+-- 1 Roblox stud = 0.28 m; 1 Source unit = 0.01905 m.
+local SOURCE_UNITS_PER_STUD = 0.28 / 0.01905
+local WALK_SPEED = 5 * SOURCE_UNITS_PER_STUD
+local RUN_SPEED = 19 * SOURCE_UNITS_PER_STUD
+local CHARGE_SPEED = 28.5 * SOURCE_UNITS_PER_STUD
+local CHARGE_DURATION = 2.30
+local CHARGE_RECOVERY = 0.60
+
 -- EXE-specific adaptation of the supplied bone camera handler.
 -- The pill base already calls formTable.calcView from its momo_calcview
 -- hook. Avoid overriding pill_ent_costume:Think or replacing CalcView for
@@ -187,9 +196,14 @@ local function tooSlow(ply, ent)
         or now < (ent.PC2_EXEBusyUntil or 0)
         or now < (ent.PC2_EXETooSlowUntil or 0) then return end
 
-    ent.PC2_EXETooSlowUntil = now + 3
-    ent.PC2_EXENextTooSlow = now + 3 + getSetting("tooSlowCooldown", "_TooSlowCooldown")
+    -- The charge animation and high-speed movement last exactly 2.30s.
+    -- Cooldown starts from the end of that window, not from key press.
+    ent.PC2_EXETooSlowUntil = now + CHARGE_DURATION
+    ent.PC2_EXENextTooSlow = ent.PC2_EXETooSlowUntil
+        + getSetting("tooSlowCooldown", "_TooSlowCooldown")
     ent.PC2_EXETooSlowGrabbed = false
+    ent.PC2_EXERecoveryUntil = 0
+    ent:SetNWFloat("PC2_EXE_RecoveryUntil", 0)
     ent:SetNWFloat("PC2_EXE_TooSlowUntil", ent.PC2_EXETooSlowUntil)
     ent:SetNWFloat("PC2_EXE_TooSlowReady", ent.PC2_EXENextTooSlow)
     ent:PillSound("tooslow")
@@ -250,7 +264,11 @@ local function tickTooSlow(ply, ent, now)
         or ent.PC2_EXETooSlowGrabbed then return end
     for _, victim in ipairs(getVictims(ply, ent, 70, -0.25)) do
         ent.PC2_EXETooSlowGrabbed = true
-        ent.PC2_EXETooSlowUntil = now
+        ent.PC2_EXETooSlowUntil = 0
+        -- Being interrupted by a successful grab also ends the charge
+        -- and applies the same 0.60-second no-sprint recovery.
+        ent.PC2_EXERecoveryUntil = now + CHARGE_RECOVERY
+        ent:SetNWFloat("PC2_EXE_RecoveryUntil", ent.PC2_EXERecoveryUntil)
         -- Bite clip: 210 frames @ 60 FPS; its named Bite and BiteEnd
         -- events fire at cycles ~0.531 and ~0.612 respectively.
         ent.PC2_EXEBusyUntil = now + 210 / 60 * 0.6125
@@ -304,8 +322,8 @@ pk_pills.register(ID, {
         dist = 115
     },
     moveSpeed = {
-        walk = 60,
-        run = 395
+        walk = WALK_SPEED, -- 5 Roblox studs/s
+        run = RUN_SPEED   -- 19 Roblox studs/s
     },
     anims = {
         default = {
@@ -355,6 +373,8 @@ pk_pills.register(ID, {
             ent.PC2_EXESniffStart = 0
             ent.PC2_EXESpeedBoostUntil = 0
             ent.PC2_EXETooSlowUntil = 0
+            ent.PC2_EXERecoveryUntil = 0
+            ent:SetNWFloat("PC2_EXE_RecoveryUntil", 0)
             ent:SetNWFloat("PC2_EXE_TooSlowReady", 0)
             ent:SetNWFloat("PC2_EXE_ThornyReady", 0)
             ent:SetNWFloat("PC2_EXE_TrapCastingUntil", 0)
@@ -421,7 +441,34 @@ pk_pills.register(ID, {
     end
 })
 
--- Server driver: keep original Nextbot mode speeds and sniff reveal cadence.
+-- Remove sprint while recovering on BOTH realms, just as survivor
+-- stamina filtering is applied on client and server for prediction.
+-- An additional SetupMove cap prevents +speed binds or stale speed values
+-- from bypassing the 5-stud/s post-charge movement limit.
+local function recoveringFromCharge(ply)
+    if not IsValid(ply) then return false end
+    local pill = pk_pills.getMappedEnt(ply)
+    if not isEXE(pill) then return false end
+    local recoveryUntil = SERVER and (pill.PC2_EXERecoveryUntil or 0)
+        or pill:GetNWFloat("PC2_EXE_RecoveryUntil", 0)
+    return CurTime() < recoveryUntil
+end
+
+hook.Add("StartCommand", "PC2_EXE_PostChargeNoSprint", function(ply, cmd)
+    if recoveringFromCharge(ply) then
+        cmd:RemoveKey(IN_SPEED)
+    end
+end)
+
+hook.Add("SetupMove", "PC2_EXE_PostChargeWalkCap", function(ply, mv)
+    if not recoveringFromCharge(ply) then return end
+    if mv:GetMaxSpeed() > WALK_SPEED then mv:SetMaxSpeed(WALK_SPEED) end
+    if mv:GetMaxClientSpeed() > WALK_SPEED then
+        mv:SetMaxClientSpeed(WALK_SPEED)
+    end
+end)
+
+-- Server driver: enforce EXE's Roblox-stud speeds throughout the charge.
 if SERVER then
     hook.Add("Think", "PC2_EXEPillServer", function()
         local now = CurTime()
@@ -431,19 +478,41 @@ if SERVER then
                 if not ply:GetNWBool("PC2_IsMonster", false) then
                     ply:SetNWBool("PC2_IsMonster", true)
                 end
-                local boosted = now < (ent.PC2_EXESpeedBoostUntil or 0)
+                -- End the charge on its original timestamp, regardless
+                -- of server Think timing. Begin the 0.60s walk-only period.
+                local chargeUntil = ent.PC2_EXETooSlowUntil or 0
+                if chargeUntil > 0 and now >= chargeUntil then
+                    ent.PC2_EXETooSlowUntil = 0
+                    ent.PC2_EXERecoveryUntil = chargeUntil + CHARGE_RECOVERY
+                    ent:SetNWFloat("PC2_EXE_TooSlowUntil", 0)
+                    ent:SetNWFloat("PC2_EXE_RecoveryUntil", ent.PC2_EXERecoveryUntil)
+                end
+
+                if now < (ent.PC2_EXETooSlowUntil or 0)
+                    and not ent.PC2_EXETooSlowGrabbed then
+                    tickTooSlow(ply, ent, now)
+                end
+
+                -- Calculate movement AFTER grab checks, so a successful
+                -- grab immediately replaces charge speed with recovery.
                 local charging = now < (ent.PC2_EXETooSlowUntil or 0)
-                local mult = boosted and 1.5 or 1
-                local walk = 60 * mult
-                local run = (charging and 500 or 395 * mult)
+                    and not ent.PC2_EXETooSlowGrabbed
+                local recovering = now < (ent.PC2_EXERecoveryUntil or 0)
+                local walk, run
+                if charging then
+                    -- Full charge speed even without holding Shift.
+                    walk, run = CHARGE_SPEED, CHARGE_SPEED
+                elseif recovering then
+                    -- For 0.60s Shift has no speed benefit.
+                    walk, run = WALK_SPEED, WALK_SPEED
+                else
+                    -- Keep the existing 4s Thorny Grave capture bonus.
+                    local boosted = now < (ent.PC2_EXESpeedBoostUntil or 0)
+                    local bonus = boosted and 1.5 or 1
+                    walk, run = WALK_SPEED * bonus, RUN_SPEED * bonus
+                end
                 if ply:GetWalkSpeed() ~= walk then ply:SetWalkSpeed(walk) end
                 if ply:GetRunSpeed() ~= run then ply:SetRunSpeed(run) end
-
-                if charging and not ent.PC2_EXETooSlowGrabbed then
-                    tickTooSlow(ply, ent, now)
-                    -- The animated charge is now driven continuously by
-                    -- overrideAnim, including automatic sequence looping.
-                end
 
                 if now >= (ent.PC2_EXESniffStart or 0) then
                     ent.PC2_EXESniffStart = now + 12
