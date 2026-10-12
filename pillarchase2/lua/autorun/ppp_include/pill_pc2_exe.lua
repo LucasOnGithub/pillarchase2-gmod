@@ -259,14 +259,14 @@ pk_pills.register(ID, {
     },
     anims = {
         default = {
-            idle = "Idle",
+            idle = "IdlePC2",
             walk = "walk",
             run = "run",
-            attack = "Attack1",
-            kill = "Jumpscare",
-            bite = "Bite",
-            trap = "Plant",
-            charge = "RunCharge"
+            attack = "AttackPC2",
+            kill = "KillPC2",
+            bite = "bite",
+            trap = "trap",
+            charge = "charge"
         }
     },
     sounds = {
