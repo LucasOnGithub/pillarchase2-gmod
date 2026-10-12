@@ -321,15 +321,14 @@ pk_pills.register(ID, {
             ent:SetNWFloat("PC2_EXE_SniffUntil", 0)
         end
     end,
+    -- LMB is EXE's regular melee attack, not an ability hotkey.
+    -- Do NOT expose attack2 or reload: the pill base automatically
+    -- binds those to RMB and R. Too Slow and Thorny Grave are invoked
+    -- exclusively through the number-key ability network handler.
     attack = {
         mode = "trigger",
         func = melee
     },
-    attack2 = {
-        mode = "trigger",
-        func = tooSlow
-    },
-    reload = thornyGrave,
     -- An EXE-specific camera callback is supported by a tiny addition
     -- to ppp_includes/nocompat.lua. The other pills remain unchanged.
     calcView = function(ply, ent, pos, angles, fov)
