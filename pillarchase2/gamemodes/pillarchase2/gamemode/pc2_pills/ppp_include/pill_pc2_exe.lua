@@ -142,14 +142,21 @@ local function getVictims(ply, ent, radius, minimumDot)
     return victims
 end
 
-local function damage(ply, ent, target, amount)
+local function damage(ply, ent, target, amount, source)
     if not IsValid(target) or not enemy(ply, target) then return false end
     local dmg = DamageInfo()
     dmg:SetAttacker(ply)
     dmg:SetInflictor(ent)
     dmg:SetDamage(amount)
     dmg:SetDamageType(DMG_SLASH)
+    -- The PlayerDeath hook runs during TakeDamageInfo; only a lethal
+    -- Too Slow hit should emit the ability death scream.
+    local marked = source == "too_slow" and target:IsPlayer()
+    if marked then target.PC2EXEAbilityDamageSource = "too_slow" end
     target:TakeDamageInfo(dmg)
+    if marked and IsValid(target) then
+        target.PC2EXEAbilityDamageSource = nil
+    end
     return true
 end
 
@@ -389,13 +396,13 @@ local function tickActiveGrabs(now)
             if not state.firstHitDone and now >= state.firstHitAt then
                 state.firstHitDone = true
                 if enemy(attacker, state.victim) then
-                    damage(attacker, ent, state.victim, GRAB_FIRST_HIT_DAMAGE)
+                    damage(attacker, ent, state.victim, GRAB_FIRST_HIT_DAMAGE, "too_slow")
                 end
             end
             if not state.biteDone and now >= state.biteAt then
                 state.biteDone = true
                 if enemy(attacker, state.victim) then
-                    damage(attacker, ent, state.victim, GRAB_BITE_DAMAGE)
+                    damage(attacker, ent, state.victim, GRAB_BITE_DAMAGE, "too_slow")
                 end
             end
             if now >= state.victimReleaseAt then
