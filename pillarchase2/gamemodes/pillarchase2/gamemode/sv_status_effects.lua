@@ -47,8 +47,10 @@ hook.Add("PostEntityTakeDamage", "PC2_EXEHitAndBrokenBoneSounds",
         -- Any further damage while critically injured plays both clips.
         -- The hit crossing the 25% threshold counts as well.
         if lowHealth(victim) then
-            victim:EmitSound(HURT_SOUND, 75, 100, 1, CHAN_AUTO)
-            victim:EmitSound(BREAK_SOUND, 75, 100, 1, CHAN_AUTO)
+            -- Distinct channels: the injury voice should not be replaced
+            -- by the bone-crack sound emitted from the same victim.
+            victim:EmitSound(HURT_SOUND, 75, 100, 1, CHAN_VOICE)
+            victim:EmitSound(BREAK_SOUND, 75, 100, 1, CHAN_BODY)
             if not victim:GetNWBool("PC2_BrokenBone", false) then
                 victim:SetNWBool("PC2_BrokenBone", true)
             end
