@@ -2,17 +2,13 @@
 -- Sounds originate at the struck survivor, not the monster.
 if not SERVER then return end
 
--- Ensure clients on dedicated servers download the uniquely named voice clip.
-resource.AddFile("sound/pc2_status/hurt_voice.wav")
-
 local HIT_SOUNDS = {
     "Monsters/Hit1.wav",
     "Monsters/Hit2.wav",
     "Monsters/Hit3.wav",
     "Monsters/Hit4.wav"
 }
--- Unique path avoids Source/GMod or addon sound files shadowing our audio.
-local HURT_SOUND = "pc2_status/hurt_voice.wav"
+local HURT_SOUND = "Player/Hurt.wav"
 local BREAK_SOUND = "Player/BrokenBone.wav"
 
 local function survivor(ply)
