@@ -18,7 +18,14 @@ if SERVER then
     end
 end
 
-if not pk_pills or not pk_pills.getPillTable or not pk_pills.apply then
+-- pk_pills.apply is server-only in the legacy module; checking it on
+-- clients would needlessly load a second copy when an addon already provides it.
+local needRuntime = not pk_pills or not pk_pills.getPillTable
+if SERVER and pk_pills and not pk_pills.apply then
+    needRuntime = true
+end
+
+if needRuntime then
     include("pc2_pills/pk_pills.lua")
 end
 
