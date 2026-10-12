@@ -194,12 +194,18 @@ local function melee(ply, ent)
         local amount = M1_DAMAGE
         local victims = getVictims(ply, ent, 105, 0.30)
         for _, victim in ipairs(victims) do
-            if victim:IsPlayer()
-                and victim:GetNWBool("PC2_BrokenBone", false) then
-                -- No M1 damage for broken-bone survivors: this M1 becomes
-                -- the execution's KillPC2 animation on successful contact.
-                if PC2_EXEExecution then
-                    PC2_EXEExecution.Start(ply, ent, victim)
+            if victim:IsPlayer() and
+                (victim:GetNWBool("PC2_BrokenBone", false)
+                or victim:Health() <= math.max(1, victim:GetMaxHealth()) * .25) then
+                -- Broken-bone victims are kept ALIVE while KillPC2 runs.
+                -- Confirm the execution started before suppressing M1.
+                local started = PC2_EXEExecution
+                    and PC2_EXEExecution.Start(ply, ent, victim)
+                if not started then
+                    -- Never make low-health survivors permanently immune:
+                    -- if another addon/model prevents the cinematic, deal
+                    -- the normal 45 M1 damage as a safe last resort.
+                    damage(ply, ent, victim, amount)
                 end
                 break
             end

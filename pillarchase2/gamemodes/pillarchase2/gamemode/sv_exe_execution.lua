@@ -20,7 +20,13 @@ end
 local function makeRagdoll(victim, pos, ang, held)
     if not IsValid(victim) then return end
     local model = victim:GetModel()
-    if not model or not util.IsValidRagdoll(model) then return end
+    -- Certain workshop playermodels cannot spawn as physics ragdolls.
+    -- Use the game's Kleiner default as a compatible fallback rather than
+    -- aborting the whole execution and granting damage immunity.
+    if not model or not util.IsValidRagdoll(model) then
+        model = "models/player/kleiner.mdl"
+    end
+    if not util.IsValidRagdoll(model) then return end
     local rag = ents.Create("prop_ragdoll")
     if not IsValid(rag) then return end
     rag:SetModel(model)
@@ -148,7 +154,13 @@ local function clear(state, keepBody)
         state.victim:SetColor(state.originalColor)
         state.victim:SetRenderMode(state.originalRenderMode)
         state.victim:DrawShadow(true)
-        if state.victim:Alive() then state.victim:Freeze(false) end
+        if state.victim:Alive() then
+            -- Undo the temporary one-HP protection if interrupted.
+            if not state.killed then
+                state.victim:SetHealth(math.max(1, state.originalHealth))
+            end
+            state.victim:Freeze(false)
+        end
     end
     if IsValid(state.attacker) then
         state.attacker:Freeze(false)
@@ -255,16 +267,23 @@ function EXEC.Start(attacker, pill, victim)
 
     local puppet = pill:GetPuppet()
     local seq = IsValid(puppet) and puppet:LookupSequence("KillPC2") or -1
-    if not IsValid(puppet) or not seq or seq < 0 then return false end
-    local duration = math.max(DEFAULT_DURATION, puppet:SequenceDuration(seq) or 0)
+    local hasSequence = IsValid(puppet) and seq ~= nil and seq >= 0
+    local duration = DEFAULT_DURATION
+    if hasSequence then
+        duration = math.max(DEFAULT_DURATION, puppet:SequenceDuration(seq) or 0)
+    end
     local pos, ang = victim:GetPos(), facing(victim:GetPos(), attacker:GetPos())
     local held = makeRagdoll(victim, pos, ang, true)
-    if not IsValid(held) then return false end
+    -- Missing ragdoll physics or a delayed puppet must NEVER turn a
+    -- confirmed M1 hit into zero damage and an impossible kill. The timed
+    -- sequence still executes, and the ordinary survivor is visible when
+    -- there is no substitute ragdoll.
 
     local now = CurTime()
     local state = {
         attacker = attacker, pill = pill, victim = victim, held = held,
         started = now, endTime = now + duration,
+        originalHealth = victim:Health(),
         originalColor = victim:GetColor(),
         originalRenderMode = victim:GetRenderMode()
     }
@@ -276,29 +295,41 @@ function EXEC.Start(attacker, pill, victim)
     victim:SetEyeAngles(ang)
     victim:SetAngles(ang)
     victim:Freeze(true)
-    -- Server SetNoDraw(true) also stops entity networking in GMod.
-    -- Transparent color plus client PrePlayerDraw hides only the model
-    -- while the survivor's entity, health and camera still replicate.
-    victim:SetRenderMode(RENDERMODE_TRANSALPHA)
-    local original = state.originalColor
-    victim:SetColor(Color(original.r, original.g, original.b, 0))
-    victim:DrawShadow(false)
+    -- GMod treats zero health as death; one HP is a reliable living state.
+    -- Damage is also blocked during this animation, until the final frame.
+    victim:SetHealth(1)
+    -- Do not turn the victim invisible unless a visible stand-in exists.
+    -- SetNoDraw would also stop networking the player, so use alpha.
+    if IsValid(held) then
+        victim:SetRenderMode(RENDERMODE_TRANSALPHA)
+        local original = state.originalColor
+        victim:SetColor(Color(original.r, original.g, original.b, 0))
+        victim:DrawShadow(false)
+    end
 
     -- Remove the attack gesture immediately on the confirming M1 hit.
     -- This avoids AttackPC2 blending on top of KillPC2.
     if pill.PC2ActiveOverlay then
         local layer = pill.PC2ActiveOverlay.layer
-        if layer and puppet:IsValidLayer(layer) then
+        if IsValid(puppet) and layer and puppet:IsValidLayer(layer) then
             puppet:SetLayerWeight(layer, 0)
             puppet:RemoveLayer(layer)
         end
         pill.PC2ActiveOverlay = nil
     end
-    if puppet.RemoveAllGestures then puppet:RemoveAllGestures() end
-    pill:PillAnim("kill", true)
-    puppet:ResetSequence(seq)
-    puppet:SetCycle(0)
-    puppet:SetPlaybackRate(1)
+    if IsValid(puppet) and puppet.RemoveAllGestures then
+        puppet:RemoveAllGestures()
+    end
+    if hasSequence then
+        pill:PillAnim("kill", true)
+        puppet:ResetSequence(seq)
+        puppet:SetCycle(0)
+        puppet:SetPlaybackRate(1)
+    else
+        -- The timed finisher still kills at 2.04 if KillPC2 could not
+        -- be resolved because the puppet is not initialized yet.
+        ErrorNoHalt("[PC2 EXE] KillPC2 not ready; using timed execution fallback\n")
+    end
 
     pill.PC2_EXEBusyUntil = state.endTime
     pill.PC2_EXENextAttack = state.endTime

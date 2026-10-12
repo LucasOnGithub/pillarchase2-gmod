@@ -16,6 +16,14 @@ GM.SurvivorStaminaDrainPerTick = 2
 GM.SurvivorStaminaRegenPerTick = 4
 GM.SurvivorWindedDuration = 3.25
 
+-- All players spawn as Dr. Kleiner by default. Morphs retain their own
+-- separate puppet model while active; unmorphing respawns as Kleiner.
+function GM:PlayerSetModel(ply)
+    if SERVER and IsValid(ply) then
+        ply:SetModel("models/player/kleiner.mdl")
+    end
+end
+
 -- Until roles exist, every player not explicitly marked as a monster
 -- is treated as a survivor. Monsters will get separate movement rules.
 function GM:IsPC2Survivor(ply)
