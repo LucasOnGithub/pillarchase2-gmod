@@ -1,0 +1,24 @@
+"VertexlitGeneric"
+{
+    "$basetexture" "models/noodles/pillarchase2/exev2/EXE_clothes_D"
+    "$bumpmap" "models/noodles/pillarchase2/shared/snow_normal"
+    "$nodecal" "1"
+    "$phong" "1"
+    "$phongboost"    "1.5"
+    "$phongexponent" "10"
+    "$phongfresnelranges"    "[0.1 0.23 0.945]"
+    "$phongdisablehalflambert"    "1"
+    "$color2" "[0.8 0.8 0.8]"
+
+    "$detail " "models/noodles/pillarchase2/shared/snow_detail"
+    "$detailscale" "2"
+    "$detailblendfactor" "1"
+    "$detailblendmode" "0"
+
+    "$envmap" "env_cubemap"
+    "$normalmapalphaenvmapmask"        "1"
+    "$envmapfresnel"    "1"
+
+    "$envmaptint"        0
+$nocull 1
+}

@@ -1,0 +1,36 @@
+"VertexlitGeneric"
+{
+    "$basetexture" "models/noodles/pillarchase2/EXEv2/EXETrap/EXETrap_d"
+    "$bumpmap""models/noodles/pillarchase2/EXEv2/EXETrap/EXETrap_n"
+
+    "$basemapalphaphongmask" "1"
+
+    // Surface properties
+    "$surfaceprop" "metal"
+    "$selfillum" "0"
+    "$translucent" "0"                                       
+    "$alpha" "1.0"                                            
+
+    // Phong shading (smooth lighting effects)
+    "$phong" "1"                                              
+    "$phongboost" "1.1"                                       
+    "$phongexponent" "3"                                     
+    "$phongfresnelranges" "[0.2 0.5 1.0]"                     
+
+    // Transparency effects
+    "$additive" "0"                                           // Enables additive blending which is used for glowing or tranclucent
+    "$nocull" "0"                                             
+
+    // Lighting control
+    "$ambientocclusion" "1"                                   // Enables ambient occlusion effects for shadows 
+    "$halflambert" "1"                                        //smoother lighting, used to  stylize materials
+
+    // Specular masks
+    "$specular" "1"                                           // Enables specular highlights (optional).
+    "$specalbedotint" "1"                                      // Tints specular highlights using the base texture's color.
+    "$specularcolor" "[0.5 0.5 0.5]"                          // Color of specular highlights ([R G B], range 0-1).
+
+    // Miscellaneous
+    "$allowalphatocoverage" "1"                               // Improves transparency for models with alpha textures.
+
+}
