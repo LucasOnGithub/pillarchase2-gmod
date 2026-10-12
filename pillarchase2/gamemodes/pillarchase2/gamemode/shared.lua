@@ -21,4 +21,20 @@ if SERVER then
             return true
         end
     end)
+
+    -- Survivors and monsters pass through other players instead of
+    -- physically blocking them. Disable Source's player-avoidance steering
+    -- as well, otherwise movement may still push around nearby players.
+    local function noPlayerCollision(ply)
+        if not IsValid(ply) or not ply:IsPlayer() then return end
+        if ply:GetCollisionGroup() ~= COLLISION_GROUP_PASSABLE_DOOR then
+            ply:SetCollisionGroup(COLLISION_GROUP_PASSABLE_DOOR)
+        end
+        ply:SetAvoidPlayers(false)
+    end
+
+    -- Apply immediately on spawn, then enforce it if an addon/pill changes
+    -- the player's collision group during gameplay.
+    hook.Add("PlayerSpawn", "PC2_NoPlayerCollisionSpawn", noPlayerCollision)
+    hook.Add("PlayerTick", "PC2_NoPlayerCollision", noPlayerCollision)
 end
