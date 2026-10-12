@@ -118,6 +118,7 @@ local function holdHead(state)
     local where = handsPosition(state.pill, state.attacker)
     if not where then return end
 
+    rag:SetupBones()
     local head = headBone(rag)
     local headPos = head and select(1, rag:GetBonePosition(head))
     if not isvector(headPos) or headPos:IsZero() then
@@ -255,7 +256,7 @@ function EXEC.Start(attacker, pill, victim)
     local puppet = pill:GetPuppet()
     local seq = IsValid(puppet) and puppet:LookupSequence("KillPC2") or -1
     if not IsValid(puppet) or not seq or seq < 0 then return false end
-    local duration = math.max(DEFAULT_DURATION, puppet:SequenceDuration(seq))
+    local duration = math.max(DEFAULT_DURATION, puppet:SequenceDuration(seq) or 0)
     local pos, ang = victim:GetPos(), facing(victim:GetPos(), attacker:GetPos())
     local held = makeRagdoll(victim, pos, ang, true)
     if not IsValid(held) then return false end
