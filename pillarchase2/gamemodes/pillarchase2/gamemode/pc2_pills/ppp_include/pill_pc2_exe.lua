@@ -171,29 +171,11 @@ local function animate(ent, name)
     return true
 end
 
-local function playKill(ply, ent, target, amount)
-    if not IsValid(target) or not isEXE(ent) or not ply:Alive() then return end
-    if target:IsPlayer() and not target:Alive() then return end
-
-    if not animate(ent, "kill") then animate(ent, "bite") end
-    ent:PillSound("jumpscare")
-    -- The source's base-class cinematic is not present in the upload.
-    -- This locks the victim for the animation and applies the lethal hit.
-    if target:IsPlayer() then
-        target:Freeze(true)
-    end
-    timer.Simple(1.2, function()
-        if IsValid(target) then
-            if enemy(ply, target) then damage(ply, ent, target, amount) end
-            if target:IsPlayer() then target:Freeze(false) end
-        end
-    end)
-end
-
 local function melee(ply, ent)
     if not isEXE(ent) or not ply:Alive() then return end
     local now = CurTime()
-    if now < (ent.PC2_EXENextAttack or 0)
+    if (SERVER and PC2_EXEExecution and PC2_EXEExecution.IsBusy(ent))
+        or now < (ent.PC2_EXENextAttack or 0)
         or now < (ent.PC2_EXETooSlowUntil or 0)
         or now < (ent.PC2_EXEBusyUntil or 0) then return end
 
@@ -212,12 +194,16 @@ local function melee(ply, ent)
         local amount = M1_DAMAGE
         local victims = getVictims(ply, ent, 105, 0.30)
         for _, victim in ipairs(victims) do
-            if victim:Health() <= amount then
-                playKill(ply, ent, victim, amount)
+            if victim:IsPlayer()
+                and victim:GetNWBool("PC2_BrokenBone", false) then
+                -- No M1 damage for broken-bone survivors: this M1 becomes
+                -- the execution's KillPC2 animation on successful contact.
+                if PC2_EXEExecution then
+                    PC2_EXEExecution.Start(ply, ent, victim)
+                end
                 break
-            else
-                damage(ply, ent, victim, amount)
             end
+            damage(ply, ent, victim, amount)
         end
     end)
 end
