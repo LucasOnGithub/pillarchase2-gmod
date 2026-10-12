@@ -5,6 +5,7 @@ AddCSLuaFile("sh_survivor_movement.lua")
 AddCSLuaFile("cl_timer.lua")
 AddCSLuaFile("cl_survivor_hud.lua")
 AddCSLuaFile("cl_stamina.lua")
+AddCSLuaFile("cl_exe_hud.lua")
 
 include("shared.lua")
 include("pc2_pills/init.lua")

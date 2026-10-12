@@ -152,4 +152,16 @@ end
 
 function ENT:OnRemove()
     self:ReleaseVictim()
+
+    -- Give the owning EXE a trap slot back as soon as this is destroyed.
+    local pill = self:GetNWEntity("PC2_EXEPill")
+    if not IsValid(pill) then return end
+    local traps = pill.PC2_EXETraps
+    if not traps then return end
+    for i = #traps, 1, -1 do
+        if traps[i] == self or not IsValid(traps[i]) then
+            table.remove(traps, i)
+        end
+    end
+    pill:SetNWInt("PC2_EXE_TrapCount", #traps)
 end

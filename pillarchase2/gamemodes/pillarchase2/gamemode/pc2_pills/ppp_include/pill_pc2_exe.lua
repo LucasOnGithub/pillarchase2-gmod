@@ -14,6 +14,19 @@ local RUN_SPEED = 19 * SOURCE_UNITS_PER_STUD
 local CHARGE_SPEED = 28.5 * SOURCE_UNITS_PER_STUD
 local CHARGE_DURATION = 2.30
 local CHARGE_RECOVERY = 0.60
+local CHARGE_COOLDOWN = 15
+local TRAP_COOLDOWN = 4.5
+local MAX_ACTIVE_TRAPS = 5
+
+-- Unlike survivor stamina, EXE has NO winded state.
+-- Drain 2 every 0.2 seconds, wait 0.55 seconds after sprinting,
+-- then regenerate 4 every 0.5 seconds, up to 105.
+local STAMINA_MAX = 105
+local STAMINA_DRAIN = 2
+local STAMINA_DRAIN_INTERVAL = 0.2
+local STAMINA_REGEN = 4
+local STAMINA_REGEN_INTERVAL = 0.5
+local STAMINA_REGEN_DELAY = 0.55
 
 -- EXE-specific adaptation of the supplied bone camera handler.
 -- The pill base already calls formTable.calcView from its momo_calcview
@@ -53,7 +66,7 @@ end
 -- which are not included in pillarchase_nextbot.zip. The original ConVar
 -- names take precedence if present; these fallback defaults are editable.
 local FALLBACK = {
-    melee = 35, bite = 70, tooSlowCooldown = 18, thornyCooldown = 20
+    melee = 35, bite = 70
 }
 local function getSetting(key, sourceName)
     local source = GetConVar(sourceName)
@@ -67,16 +80,27 @@ if SERVER then
         "EXE melee damage when _EXEDamage is absent.")
     CreateConVar("pc2_exe_bite", tostring(FALLBACK.bite), FCVAR_ARCHIVE,
         "EXE Too Slow grab damage when _TooSlowDamage is absent.")
-    CreateConVar("pc2_exe_tooSlowCooldown", tostring(FALLBACK.tooSlowCooldown), FCVAR_ARCHIVE,
-        "EXE Too Slow cooldown when _TooSlowCooldown is absent.")
-    CreateConVar("pc2_exe_thornyCooldown", tostring(FALLBACK.thornyCooldown), FCVAR_ARCHIVE,
-        "EXE Thorny Grave cooldown when _ThornyGraveCooldown is absent.")
     -- Ability buttons and RMB are now handled server-side with
     -- PlayerButtonDown / KeyPress, like the Bendy Redrawn pill.
 end
 
 local function isEXE(ent)
     return IsValid(ent) and ent.GetPillForm and ent:GetPillForm() == ID
+end
+
+-- Prune destroyed traps, preserving room for up to five active traps.
+-- Trap entities also refresh the counter immediately upon removal.
+local function activeTrapCount(ent)
+    local traps = ent.PC2_EXETraps or {}
+    for i = #traps, 1, -1 do
+        if not IsValid(traps[i]) then table.remove(traps, i) end
+    end
+    ent.PC2_EXETraps = traps
+    local count = #traps
+    if SERVER and ent:GetNWInt("PC2_EXE_TrapCount", -1) ~= count then
+        ent:SetNWInt("PC2_EXE_TrapCount", count)
+    end
+    return count
 end
 
 local function enemy(ply, other)
@@ -199,8 +223,7 @@ local function tooSlow(ply, ent)
     -- The charge animation and high-speed movement last exactly 2.30s.
     -- Cooldown starts from the end of that window, not from key press.
     ent.PC2_EXETooSlowUntil = now + CHARGE_DURATION
-    ent.PC2_EXENextTooSlow = ent.PC2_EXETooSlowUntil
-        + getSetting("tooSlowCooldown", "_TooSlowCooldown")
+    ent.PC2_EXENextTooSlow = ent.PC2_EXETooSlowUntil + CHARGE_COOLDOWN
     ent.PC2_EXETooSlowGrabbed = false
     ent.PC2_EXERecoveryUntil = 0
     ent:SetNWFloat("PC2_EXE_RecoveryUntil", 0)
@@ -215,7 +238,8 @@ local function thornyGrave(ply, ent)
     if now < (ent.PC2_EXENextThorny or 0)
         or now < (ent.PC2_EXEBusyUntil or 0)
         or now < (ent.PC2_EXETooSlowUntil or 0) then return end
-    ent.PC2_EXENextThorny = now + getSetting("thornyCooldown", "_ThornyGraveCooldown")
+    if activeTrapCount(ent) >= MAX_ACTIVE_TRAPS then return end
+    ent.PC2_EXENextThorny = now + TRAP_COOLDOWN
     -- Source model's trap sequence: 122 frames at 60 FPS (~2.03 sec),
     -- with PlantSeed at cycle .537 (~1.09 sec).
     ent.PC2_EXEBusyUntil = now + 122 / 60
@@ -227,6 +251,7 @@ local function thornyGrave(ply, ent)
     -- The Nextbot creates its trap at PlantSeed (left hand animation event).
     timer.Simple((122 / 60) * 0.5371900797, function()
         if not isEXE(ent) or not ply:Alive() then return end
+        if activeTrapCount(ent) >= MAX_ACTIVE_TRAPS then return end
 
         local puppet = ent:GetPuppet()
         local spawnPos = ply:GetPos() + ply:GetForward() * 25 + Vector(0, 0, 15)
@@ -254,6 +279,9 @@ local function thornyGrave(ply, ent)
         trap:SetNWEntity("PC2_EXEOwner", ply)
         trap:SetNWEntity("PC2_EXEPill", ent)
         trap:Spawn()
+        if not IsValid(trap) then return end
+        table.insert(ent.PC2_EXETraps, trap)
+        ent:SetNWInt("PC2_EXE_TrapCount", activeTrapCount(ent))
         ent:DeleteOnRemove(trap)
     end)
 end
@@ -367,6 +395,17 @@ pk_pills.register(ID, {
     initialize = function(ply, ent, puppet)
         if SERVER and IsValid(ply) and isEXE(ent) then
             ply:SetNWBool("PC2_IsMonster", true)
+            ent.PC2_EXETraps = {}
+            ent:SetNWInt("PC2_EXE_TrapCount", 0)
+            ent.PC2_EXEStamina = STAMINA_MAX
+            ent.PC2_EXESprinting = false
+            ent.PC2_EXENextDrain = 0
+            ent.PC2_EXENextRegen = 0
+            ply.PC2EXERawSprintHeld = false
+            ply:SetNWFloat("PC2_Stamina", STAMINA_MAX)
+            ply:SetNWFloat("PC2_MaxStamina", STAMINA_MAX)
+            ply:SetNWBool("PC2_Exhausted", false)
+            ply:SetNWBool("PC2_SprintReleaseRequired", false)
             ent.PC2_EXENextAttack = 0
             ent.PC2_EXENextTooSlow = 0
             ent.PC2_EXENextThorny = 0
@@ -441,6 +480,99 @@ pk_pills.register(ID, {
     end
 })
 
+-- EXE stamina uses a separate rule set from survivors.
+-- It never sets a winded state or requires releasing Shift to run again.
+local function tickEXEStamina(ply, ent, now)
+    local value = math.Clamp(ent.PC2_EXEStamina or STAMINA_MAX, 0, STAMINA_MAX)
+    local charging = now < (ent.PC2_EXETooSlowUntil or 0)
+        and not ent.PC2_EXETooSlowGrabbed
+    local recovering = now < (ent.PC2_EXERecoveryUntil or 0)
+    local sprinting = value > 0 and not charging and not recovering
+        and ply.PC2EXERawSprintHeld == true
+        and ply:OnGround() and not ply:Crouching()
+        and ply:GetMoveType() == MOVETYPE_WALK
+        and ply:GetVelocity():Length2DSqr() > 100
+
+    if sprinting then
+        if not ent.PC2EXESprinting then
+            ent.PC2EXESprinting = true
+            ent.PC2_EXENextDrain = now + STAMINA_DRAIN_INTERVAL
+        end
+        local nextDrain = ent.PC2_EXENextDrain or (now + STAMINA_DRAIN_INTERVAL)
+        local steps = 0
+        while now >= nextDrain and value > 0 and steps < 10 do
+            value = math.max(0, value - STAMINA_DRAIN)
+            nextDrain = nextDrain + STAMINA_DRAIN_INTERVAL
+            steps = steps + 1
+        end
+        ent.PC2_EXENextDrain = nextDrain
+        if value <= 0 then sprinting = false end
+    end
+
+    if not sprinting then
+        if ent.PC2EXESprinting then
+            ent.PC2EXESprinting = false
+            -- No winded pause: regeneration can begin after just .55s.
+            ent.PC2_EXENextRegen = now + STAMINA_REGEN_DELAY
+        elseif not ent.PC2_EXENextRegen or ent.PC2_EXENextRegen == 0 then
+            ent.PC2_EXENextRegen = now + STAMINA_REGEN_DELAY
+        end
+
+        local nextRegen = ent.PC2_EXENextRegen
+        local steps = 0
+        while value < STAMINA_MAX and now >= nextRegen and steps < 10 do
+            value = math.min(STAMINA_MAX, value + STAMINA_REGEN)
+            nextRegen = nextRegen + STAMINA_REGEN_INTERVAL
+            steps = steps + 1
+        end
+        ent.PC2_EXENextRegen = nextRegen
+    end
+
+    if value ~= ent.PC2_EXEStamina then
+        ent.PC2_EXEStamina = value
+        ply:SetNWFloat("PC2_Stamina", value)
+    end
+end
+
+-- Read the authoritative charge timestamp on each realm so client-side
+-- prediction doesn't unexpectedly slow EXE during an active charge.
+local function isCharging(pill)
+    local deadline = SERVER and (pill.PC2_EXETooSlowUntil or 0)
+        or pill:GetNWFloat("PC2_EXE_TooSlowUntil", 0)
+    return CurTime() < deadline
+end
+
+-- Capture the raw sprint input BEFORE command filtering (also on clients
+-- for prediction), and enforce forced walking at zero stamina.
+hook.Add("StartCommand", "PC2_EXE_StaminaInput", function(ply, cmd)
+    if not IsValid(ply) or not ply:Alive() then return end
+    local ent = pk_pills.getMappedEnt(ply)
+    if not isEXE(ent) then return end
+
+    if SERVER then ply.PC2EXERawSprintHeld = cmd:KeyDown(IN_SPEED) end
+
+    local chargeActive = isCharging(ent)
+    local stamina = SERVER and (ent.PC2_EXEStamina or STAMINA_MAX)
+        or ply:GetNWFloat("PC2_Stamina", STAMINA_MAX)
+    if stamina <= 0 and not chargeActive then
+        cmd:RemoveKey(IN_SPEED)
+    end
+end)
+
+hook.Add("SetupMove", "PC2_EXE_EmptyStaminaWalk", function(ply, mv)
+    if not IsValid(ply) or not ply:Alive() then return end
+    local ent = pk_pills.getMappedEnt(ply)
+    if not isEXE(ent) then return end
+    if isCharging(ent) then return end
+
+    local stamina = SERVER and (ent.PC2_EXEStamina or STAMINA_MAX)
+        or ply:GetNWFloat("PC2_Stamina", STAMINA_MAX)
+    if stamina > 0 then return end
+    local speed = ply:GetWalkSpeed()
+    if mv:GetMaxSpeed() > speed then mv:SetMaxSpeed(speed) end
+    if mv:GetMaxClientSpeed() > speed then mv:SetMaxClientSpeed(speed) end
+end)
+
 -- Remove sprint while recovering on BOTH realms, just as survivor
 -- stamina filtering is applied on client and server for prediction.
 -- An additional SetupMove cap prevents +speed binds or stale speed values
@@ -513,6 +645,8 @@ if SERVER then
                 end
                 if ply:GetWalkSpeed() ~= walk then ply:SetWalkSpeed(walk) end
                 if ply:GetRunSpeed() ~= run then ply:SetRunSpeed(run) end
+
+                tickEXEStamina(ply, ent, now)
 
                 if now >= (ent.PC2_EXESniffStart or 0) then
                     ent.PC2_EXESniffStart = now + 12
@@ -593,6 +727,10 @@ else
     surface.CreateFont("PC2_EXEAbilitySmall", {
         font = "Trebuchet MS", size = 14, weight = 800
     })
+    surface.CreateFont("PC2_EXEAbilityCooldown", {
+        font = "Trebuchet MS", size = 27, weight = 1000,
+        antialias = true
+    })
 
     local abilityCards = {
         { name = "TOO SLOW", key = "1", icon = "tooSlow",
@@ -621,7 +759,9 @@ else
             local x = x0 + (i - 1) * (size + gap)
             local timeLeft = math.max(0, pill:GetNWFloat(ability.readyTime, 0) - CurTime())
             local activeLeft = math.max(0, pill:GetNWFloat(ability.activeTime, 0) - CurTime())
-            local ready = timeLeft <= 0 and activeLeft <= 0
+            local fullTraps = ability.icon == "thorny" and
+                pill:GetNWInt("PC2_EXE_TrapCount", 0) >= MAX_ACTIVE_TRAPS
+            local ready = timeLeft <= 0 and activeLeft <= 0 and not fullTraps
             local imageState = ready and 1 or 2
             local texture = icons[ability.icon][imageState]
 
@@ -639,7 +779,7 @@ else
                     or Color(106, 32, 43))
                 surface.DrawOutlinedRect(x, y, size, size, 2)
                 draw.SimpleText(ability.name, "PC2_EXEAbilitySmall",
-                    x + size / 2, y + size / 2, color_white,
+                    x + size / 2, y + size * 0.25, color_white,
                     TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
             end
 
@@ -647,17 +787,24 @@ else
                 x + 5, y + 6, color_white,
                 TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP, 1, Color(0, 0, 0))
 
-            local status
-            if activeLeft > 0 then
-                status = "ACTIVE"
-            elseif timeLeft > 0 then
-                status = string.format("%.1fs", timeLeft)
-            else
-                status = "READY"
+            -- Count down IN THE CENTER of the icon, not beneath it.
+            -- Ready abilities deliberately display no READY label.
+            if timeLeft > 0 then
+                draw.SimpleTextOutlined(string.format("%.1f", timeLeft),
+                    "PC2_EXEAbilityCooldown",
+                    x + size / 2, y + size / 2, color_white,
+                    TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER,
+                    2, Color(0, 0, 0, 240))
             end
-            draw.SimpleTextOutlined(status, "PC2_EXEAbilitySmall",
-                x + size / 2, y + size - 7, color_white,
-                TEXT_ALIGN_CENTER, TEXT_ALIGN_BOTTOM, 1, Color(0, 0, 0))
+
+            if ability.icon == "thorny" then
+                local count = pill:GetNWInt("PC2_EXE_TrapCount", 0)
+                draw.SimpleTextOutlined(string.format("%d/%d", count, MAX_ACTIVE_TRAPS),
+                    "PC2_EXEAbilitySmall",
+                    x + size / 2, y + size - 6,
+                    color_white, TEXT_ALIGN_CENTER, TEXT_ALIGN_BOTTOM,
+                    1, Color(0, 0, 0, 230))
+            end
         end
     end)
 
