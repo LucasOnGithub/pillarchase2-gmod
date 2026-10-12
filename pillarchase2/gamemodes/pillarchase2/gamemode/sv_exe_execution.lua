@@ -144,7 +144,9 @@ local function clear(state, keepBody)
     if IsValid(state.victim) then
         state.victim.PC2EXEExecutionVictim = nil
         state.victim:SetNWBool("PC2_EXEBeingExecuted", false)
-        state.victim:SetNoDraw(state.originalNoDraw)
+        state.victim:SetColor(state.originalColor)
+        state.victim:SetRenderMode(state.originalRenderMode)
+        state.victim:DrawShadow(true)
         if state.victim:Alive() then state.victim:Freeze(false) end
     end
     if IsValid(state.attacker) then
@@ -262,7 +264,8 @@ function EXEC.Start(attacker, pill, victim)
     local state = {
         attacker = attacker, pill = pill, victim = victim, held = held,
         started = now, endTime = now + duration,
-        originalNoDraw = victim:GetNoDraw()
+        originalColor = victim:GetColor(),
+        originalRenderMode = victim:GetRenderMode()
     }
     active[state] = true
     pill.PC2EXEExecutionState = state
@@ -272,7 +275,13 @@ function EXEC.Start(attacker, pill, victim)
     victim:SetEyeAngles(ang)
     victim:SetAngles(ang)
     victim:Freeze(true)
-    victim:SetNoDraw(true)
+    -- Server SetNoDraw(true) also stops entity networking in GMod.
+    -- Transparent color plus client PrePlayerDraw hides only the model
+    -- while the survivor's entity, health and camera still replicate.
+    victim:SetRenderMode(RENDERMODE_TRANSALPHA)
+    local original = state.originalColor
+    victim:SetColor(Color(original.r, original.g, original.b, 0))
+    victim:DrawShadow(false)
 
     -- Remove the attack gesture immediately on the confirming M1 hit.
     -- This avoids AttackPC2 blending on top of KillPC2.
@@ -372,5 +381,9 @@ hook.Add("PlayerSpawn", "PC2_EXEExecutionRespawnCleanup", function(ply)
     ply.PC2EXEExecutionNoDefaultRagdoll = nil
     ply.PC2EXEExecutionVictim = nil
     ply:SetNWBool("PC2_EXEBeingExecuted", false)
-    if wasBeingExecuted then ply:SetNoDraw(false) end
+    if wasBeingExecuted then
+        ply:SetRenderMode(RENDERMODE_NORMAL)
+        ply:SetColor(color_white)
+        ply:DrawShadow(true)
+    end
 end)
