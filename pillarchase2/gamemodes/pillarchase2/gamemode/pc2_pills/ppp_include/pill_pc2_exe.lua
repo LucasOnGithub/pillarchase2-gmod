@@ -6,6 +6,40 @@ local ID = "pc2_exe"
 local MODEL = "models/noodles/pillarchase2/exe.mdl"
 local TRAP = "pc2_exe_trap"
 
+-- EXE-specific adaptation of the supplied bone camera handler.
+-- The pill base already calls formTable.calcView from its momo_calcview
+-- hook. Avoid overriding pill_ent_costume:Think or replacing CalcView for
+-- any other pill, as the old Rachel hook does.
+local function boneAnchor(puppet, boneInfo, fallback)
+    if not IsValid(puppet) or not boneInfo then return fallback end
+
+    local boneID = puppet:LookupBone(boneInfo[1])
+    if boneID == nil then return fallback end
+
+    puppet:SetupBones()
+    local bonePos = puppet:GetBonePosition(boneID)
+    if not isvector(bonePos) then
+        local matrix = puppet:GetBoneMatrix(boneID)
+        if matrix then bonePos = matrix:GetTranslation() end
+    end
+
+    if not isvector(bonePos) or bonePos:IsZero() then
+        return fallback
+    end
+
+    return bonePos
+end
+
+local function offsetFromBone(puppet, boneInfo, viewAngles, fallback)
+    local anchor = boneAnchor(puppet, boneInfo, fallback)
+    -- Camera position follows the animated bone, while the horizontal
+    -- offsets follow the player's view direction, not head roll/pitch.
+    local yaw = Angle(0, viewAngles.y, 0)
+    return anchor + yaw:Forward() * boneInfo[2]
+        + yaw:Right() * boneInfo[3]
+        + Vector(0, 0, boneInfo[4])
+end
+
 -- The source Nextbot reads these settings from a DIFFERENT addon's ConVars,
 -- which are not included in pillarchase_nextbot.zip. The original ConVar
 -- names take precedence if present; these fallback defaults are editable.
@@ -250,15 +284,19 @@ pk_pills.register(ID, {
     noFallDamage = true,
     hideWeapons = true,
     movePoseMode = false,
-    -- The close possession camera must not render the player's own
-    -- model in front of its lens.
-    hidePuppetForFirstPerson = function()
-        local setting = GetConVar("pc2_exe_firstperson")
-        return setting and setting:GetBool() or false
-    end,
-    -- Original possession: first view 115u behind + (0,10,15) offset,
-    -- second close view +25u forward. Press B to toggle view.
-    -- Used by the base camera if custom CalcView is unavailable.
+    -- Scoped alternative to the supplied rachel_initialize camera hook.
+    -- Our existing momo_calcview -> formTable.calcView hook is enabled,
+    -- so we do not need to replace the pill costume's Think function.
+    boneCameraEnabled = true,
+    firstPersonBody = true,
+    firstPersonHideHead = true,
+    -- Bone entry format from the supplied code:
+    -- { bone name, forward, right, vertical } (Source units).
+    -- EXE has UpperTorso rather than a bone literally named "Spine".
+    ThirdPersonBone = { "UpperTorso", 0, 23, -9 },
+    FirstPersonBone = { "Head", 43, 0, 2 },
+    -- Original possession camera remains 115 Source units behind EXE.
+    -- RMB toggles first-person and the shoulder/spine third-person view.
     camera = {
         offset = Vector(0, 10, 100),
         dist = 115
@@ -332,37 +370,50 @@ pk_pills.register(ID, {
     -- An EXE-specific camera callback is supported by a tiny addition
     -- to ppp_includes/nocompat.lua. The other pills remain unchanged.
     calcView = function(ply, ent, pos, angles, fov)
-        if not isEXE(ent) then return end
-        if ply:GetViewEntity() ~= ply then return end
+        if not isEXE(ent) or ply:GetViewEntity() ~= ply then return end
+        if not ent.formTable or not ent.formTable.boneCameraEnabled then return end
 
-        local firstPerson = CLIENT and GetConVar("pc2_exe_firstperson")
+        local puppet = ent:GetPuppet()
+        local firstPerson = GetConVar("pc2_exe_firstperson")
             and GetConVar("pc2_exe_firstperson"):GetBool()
-        local start = ply:EyePos()
+
         if firstPerson then
+            -- Head bone location is evaluated every frame, so it follows
+            -- EXE's idle, walking, running and ability animations.
+            -- 43 units forward of the head avoids seeing its muzzle.
+            local desired = offsetFromBone(
+                puppet, ent.formTable.FirstPersonBone, angles, ply:EyePos())
             return {
-                origin = start + angles:Forward() * 25,
+                origin = desired,
                 angles = angles,
                 fov = fov,
-                drawviewer = false
+                drawviewer = true, -- REQUIRED to see EXE's own puppet.
+                znear = 4
             }
         end
 
-        local cameraPos = start + angles:Right() * 10 + Vector(0, 0, 15)
-        local desired = cameraPos - angles:Forward() * 115
-        local puppet = ent:GetPuppet()
-        local tr = util.TraceHull({
-            start = cameraPos,
+        -- Third person tracks EXE's spine/UpperTorso, moved a little
+        -- LOWER and farther to the RIGHT, as requested.
+        local anchor = offsetFromBone(
+            puppet, ent.formTable.ThirdPersonBone,
+            angles, ply:EyePos() - Vector(0, 0, 18))
+        local distance = ent.formTable.camera and ent.formTable.camera.dist or 115
+        local desired = anchor - angles:Forward() * distance
+        local trace = util.TraceHull({
+            start = anchor,
             endpos = desired,
-            mins = Vector(-5, -5, -5), maxs = Vector(5, 5, 5),
-            filter = {ply, ent, puppet},
+            mins = Vector(-5, -5, -5),
+            maxs = Vector(5, 5, 5),
+            filter = { ply, ent, puppet },
             mask = MASK_VISIBLE
         })
         return {
-            origin = tr.HitPos,
+            origin = trace.HitPos,
             angles = angles,
             fov = fov,
             drawviewer = true
         }
+
     end
 })
 
@@ -412,15 +463,27 @@ if SERVER then
         if selected == 2 then thornyGrave(ply, pill) end
     end)
 else
-    local view = CreateClientConVar("pc2_exe_firstperson", "0", true, false,
-        "EXE view: 0 = original third-person view, 1 = close/first-person.")
+    local view = CreateClientConVar("pc2_exe_firstperson", "1", true, false,
+        "EXE view: 1 = head-bone first person, 0 = spine-bone third person.")
+    local lastEXEPill
     hook.Add("Think", "PC2_EXEKeys", function()
-        if gui.IsGameUIVisible() or vgui.GetKeyboardFocus() then return end
         local ply = LocalPlayer()
         if not IsValid(ply) then return end
         local pill = pk_pills.getMappedEnt(ply)
-        if not isEXE(pill) then return end
 
+        -- The old third-person setting may be archived from previous builds.
+        -- Newly applied EXE pills always start from the head-bone view.
+        if not isEXE(pill) then
+            lastEXEPill = nil
+            return
+        end
+        if lastEXEPill ~= pill then
+            lastEXEPill = pill
+            RunConsoleCommand("pc2_exe_firstperson", "1")
+            return
+        end
+
+        if gui.IsGameUIVisible() or vgui.GetKeyboardFocus() then return end
         if input.WasKeyPressed(KEY_1) then
             net.Start("pc2_exe_ability")
             net.WriteUInt(1, 2)
@@ -429,7 +492,8 @@ else
             net.Start("pc2_exe_ability")
             net.WriteUInt(2, 2)
             net.SendToServer()
-        elseif input.WasKeyPressed(KEY_B) then
+        elseif input.WasMousePressed(MOUSE_RIGHT) then
+            -- RMB now switches camera; it is NOT bound to an ability.
             RunConsoleCommand("pc2_exe_firstperson", view:GetBool() and "0" or "1")
         end
     end)

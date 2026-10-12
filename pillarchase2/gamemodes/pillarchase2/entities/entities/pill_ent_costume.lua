@@ -686,14 +686,33 @@ function ENT:Think()
         -- has been selected, to survive idle/walk/run transitions.
         self:PillOverlayThink()
     else
-        -- Hide EXE's puppet in the close possession camera to avoid
-        -- looking through its head. Do not affect other pills.
-        if ply == LocalPlayer() and self.formTable.hidePuppetForFirstPerson then
+        -- EXE opts into drawing its whole body in the head-bone camera.
+        -- Unlike the old copied hook, do not override ENT.Think:
+        -- the base pill needs it for gestures, charge and trap animations.
+        local localPlayer = ply == LocalPlayer()
+        if localPlayer and self.formTable.firstPersonBody then
+            puppet:SetNoDraw(false)
+        elseif localPlayer and self.formTable.hidePuppetForFirstPerson then
             puppet:SetNoDraw(self.formTable.hidePuppetForFirstPerson(ply, self))
         elseif self:GetPillUser() ~= LocalPlayer() or pk_pills.convars.cl_thirdperson:GetBool() then
             puppet:SetNoDraw(false)
         else
             puppet:SetNoDraw(true)
+        end
+
+        -- Hide only EXE's HEAD (and its children), locally, when the
+        -- camera is at the front of the head. Arms, torso and legs stay
+        -- rendered. Restore the head whenever third-person is selected.
+        if localPlayer and self.formTable.firstPersonHideHead then
+            local cv = GetConVar("pc2_exe_firstperson")
+            local hideHead = cv and cv:GetBool() or false
+            local bone = puppet:LookupBone("Head")
+            if bone and self.PC2HeadIsHidden ~= hideHead then
+                puppet:ManipulateBoneScale(bone, hideHead
+                    and Vector(0.001, 0.001, 0.001)
+                    or Vector(1, 1, 1))
+                self.PC2HeadIsHidden = hideHead
+            end
         end
 
         local realWep = self:GetPillUser():GetActiveWeapon()
