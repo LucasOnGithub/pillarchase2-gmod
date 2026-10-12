@@ -316,6 +316,10 @@ function ENT:Think()
         local anim
         --local useSeqVel=true
         local overrideRate
+        -- Some pills (EXE's Too Slow) need a continuing locomotion
+        -- override. This runs after explicit trap/grab animations.
+        local forcedAnim = self.formTable.overrideAnim
+            and self.formTable.overrideAnim(ply, self) or nil
 
         if (not self.anim or not anims[self.anim]) then
             self.animFreeze = nil
@@ -350,6 +354,10 @@ function ENT:Think()
                     self.animCycle = cycle
                 end
             end
+        elseif forcedAnim and anims[forcedAnim] then
+            -- Continuous override: don't clear this selection each frame.
+            anim = anims[forcedAnim]
+            overrideRate = anims[forcedAnim .. "_rate"] or 1
         elseif self.tickAnim and anims[self.tickAnim] then
             anim = anims[self.tickAnim]
             overrideRate = anims[self.tickAnim .. "_rate"] or 1
@@ -382,7 +390,15 @@ function ENT:Think()
             overrideRate = 1
         end
 
-        if (anim and puppet:GetSequence() ~= puppet:LookupSequence(anim)) or self.animStart or (self.formTable.autoRestartAnims and puppet:GetCycle() == 1) then
+        -- Some model sequences (such as EXE's charge) do not loop on
+        -- their own. Restart only explicitly loop-enabled overrides.
+        local loopOverride = forcedAnim and anim == anims[forcedAnim]
+            and self.formTable.loopAnims
+            and self.formTable.loopAnims[forcedAnim]
+        local loopFinished = loopOverride and puppet:GetCycle() >= 0.99
+        if (anim and puppet:GetSequence() ~= puppet:LookupSequence(anim))
+            or self.animStart or loopFinished
+            or (self.formTable.autoRestartAnims and puppet:GetCycle() == 1) then
             puppet:ResetSequence(puppet:LookupSequence(anim))
             puppet:SetCycle(0)
             self.animCycle = 0
@@ -392,7 +408,11 @@ function ENT:Think()
         local seq_vel = puppet:GetSequenceGroundSpeed(puppet:GetSequence())
 
         --if true then
-        if self.formTable.movePoseMode ~= "xy" and self.formTable.movePoseMode ~= "xy-bot" and not overrideRate then
+        -- Explicit animation rate overrides must not be skipped by the
+        -- movement-driven sequence playback logic.
+        if overrideRate ~= nil
+            or (self.formTable.movePoseMode ~= "xy"
+                and self.formTable.movePoseMode ~= "xy-bot") then
             -- In-place animation sequences can have zero ground speed.
             -- Never divide by zero or let EXE's running animation accelerate.
             local rate = overrideRate or (seq_vel > 0 and vel / seq_vel or 1)
@@ -804,6 +824,30 @@ if SERVER then
 
     function ENT:PillAnimTick(name)
         self.tickAnim = name
+    end
+
+    -- One-shot layer over the puppet's current locomotion animation.
+    -- EXE's AttackPC2 contains upper-body animation only.
+    function ENT:PillOverlaySequence(name, playbackRate)
+        local puppet = self:GetPuppet()
+        local anims = self.formTable and self.formTable.anims
+            and self.formTable.anims.default
+        local sequenceName = anims and anims[name]
+        if not IsValid(puppet) or not sequenceName then return false end
+
+        local sequence = puppet:LookupSequence(sequenceName)
+        if not sequence or sequence < 0 then return false end
+        if not puppet.AddGestureSequence then return false end
+
+        local layer = puppet:AddGestureSequence(sequence, true)
+        if not layer or layer < 0 then return false end
+        if puppet.IsValidLayer and not puppet:IsValidLayer(layer) then
+            return false
+        end
+
+        puppet:SetLayerWeight(layer, 1)
+        puppet:SetLayerPlaybackRate(layer, playbackRate or 1)
+        return true
     end
 
     function ENT:PillGesture(name)

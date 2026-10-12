@@ -122,7 +122,9 @@ local function melee(ply, ent)
 
     ent.PC2_EXENextAttack = now + 1.6
     ent.PC2_EXEBusyUntil = now + 0.55 -- original Nextbot melee delay
-    animate(ent, "attack")
+    -- AttackPC2 only moves the upper body; layer it over idle/walk/run.
+    -- Do not replace the current locomotion animation or freeze the legs.
+    ent:PillOverlaySequence("attack")
     ent:PillSound("attack")
 
     -- Original Nextbot damages via the model's "Melee" animation event.
@@ -266,9 +268,19 @@ pk_pills.register(ID, {
             kill = "KillPC2",
             bite = "bite",
             trap = "trap",
-            charge = "charge"
+            charge = "charge",
+            charge_rate = 1.6 -- faster, looping Too Slow animation
         }
     },
+    -- Charge is played as EXE's base locomotion clip for the full boost.
+    loopAnims = { charge = true },
+    overrideAnim = function(ply, ent)
+        if ent.PC2_EXETooSlowUntil
+            and CurTime() < ent.PC2_EXETooSlowUntil
+            and not ent.PC2_EXETooSlowGrabbed then
+            return "charge"
+        end
+    end,
     sounds = {
         step = "noodles/pillarchase2/exe/exestep.wav",
         attack = "noodles/pillarchase2/exe/exeattack.wav",
@@ -359,9 +371,8 @@ if SERVER then
 
                 if charging and not ent.PC2_EXETooSlowGrabbed then
                     tickTooSlow(ply, ent, now)
-                    if ent.PC2_EXETooSlowUntil > now then
-                        ent:PillAnimTick("charge")
-                    end
+                    -- The animated charge is now driven continuously by
+                    -- overrideAnim, including automatic sequence looping.
                 end
 
                 if now >= (ent.PC2_EXESniffStart or 0) then
