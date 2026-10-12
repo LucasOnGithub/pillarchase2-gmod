@@ -1,0 +1,7 @@
+"pillarchase2"
+{
+    "base"       "base"
+    "title"      "Pillar Chase 2"
+    "category"   "other"
+    "menusystem" "1"
+}
