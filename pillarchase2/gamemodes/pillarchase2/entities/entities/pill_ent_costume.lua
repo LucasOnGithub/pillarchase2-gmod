@@ -393,7 +393,9 @@ function ENT:Think()
 
         --if true then
         if self.formTable.movePoseMode ~= "xy" and self.formTable.movePoseMode ~= "xy-bot" and not overrideRate then
-            local rate = overrideRate or vel / seq_vel
+            -- In-place animation sequences can have zero ground speed.
+            -- Never divide by zero or let EXE's running animation accelerate.
+            local rate = overrideRate or (seq_vel > 0 and vel / seq_vel or 1)
 
             --goofy limitation (floods console with errors if above 12!)
             if rate > 12 then
@@ -658,7 +660,11 @@ function ENT:Think()
             end
         end
     else
-        if self:GetPillUser() ~= LocalPlayer() or pk_pills.convars.cl_thirdperson:GetBool() then
+        -- Hide EXE's puppet in the close possession camera to avoid
+        -- looking through its head. Do not affect other pills.
+        if ply == LocalPlayer() and self.formTable.hidePuppetForFirstPerson then
+            puppet:SetNoDraw(self.formTable.hidePuppetForFirstPerson(ply, self))
+        elseif self:GetPillUser() ~= LocalPlayer() or pk_pills.convars.cl_thirdperson:GetBool() then
             puppet:SetNoDraw(false)
         else
             puppet:SetNoDraw(true)

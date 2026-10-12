@@ -2,10 +2,12 @@
 -- Previously these scripts existed only in a sibling /lua/ addon directory,
 -- which was NOT loaded when installing garrysmod/gamemodes/pillarchase2/.
 if SERVER then
-    AddCSLuaFile("pc2_pills/init.lua")
-    AddCSLuaFile("pc2_pills/pk_pills.lua")
-    AddCSLuaFile("pc2_pills/pack_pc2.lua")
-    AddCSLuaFile("pc2_pills/ppp_include/pill_pc2_exe.lua")
+    -- Paths here are relative to THIS script (pc2_pills/init.lua).
+    -- Prefixing pc2_pills/ again made GMod search a nonexistent nested path.
+    AddCSLuaFile()
+    AddCSLuaFile("pk_pills.lua")
+    AddCSLuaFile("pack_pc2.lua")
+    AddCSLuaFile("ppp_include/pill_pc2_exe.lua")
 
     -- These are included dynamically by pk_pills.lua. Send client modules
     -- explicitly so dedicated servers work with sv_allowcslua=0.
@@ -14,7 +16,7 @@ if SERVER then
         "nocompat.lua", "restricted.lua", "tf2lib.lua",
         "util.lua", "vox.lua"
     }) do
-        AddCSLuaFile("pc2_pills/ppp_includes/" .. name)
+        AddCSLuaFile("ppp_includes/" .. name)
     end
 end
 
@@ -26,7 +28,7 @@ if SERVER and pk_pills and not pk_pills.apply then
 end
 
 if needRuntime then
-    include("pc2_pills/pk_pills.lua")
+    include("pk_pills.lua")
 end
 
-include("pc2_pills/pack_pc2.lua")
+include("pack_pc2.lua")

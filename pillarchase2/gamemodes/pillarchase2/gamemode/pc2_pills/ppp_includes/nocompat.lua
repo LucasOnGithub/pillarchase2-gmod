@@ -38,6 +38,13 @@ hook.Add("CalcView", "momo_calcview", function(ply, pos, ang, fov, nearZ, farZ)
     local ent = pk_pills.getMappedEnt(LocalPlayer())
 
     if IsValid(ent) and ply:GetViewEntity() == ply then
+        -- Custom camera for forms with a possession view, including PC2 EXE.
+        -- Other pill forms continue to use their original default camera.
+        if ent.formTable and ent.formTable.calcView then
+            local view = ent.formTable.calcView(ply, ent, pos, ang, fov)
+            if view then return view end
+        end
+
         local startpos
 
         if ent.formTable.type == "phys" then
