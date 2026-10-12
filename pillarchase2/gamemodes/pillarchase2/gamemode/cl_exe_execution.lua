@@ -31,3 +31,9 @@ hook.Add("Think", "PC2_EXEExecutionHeadlessRagdolls", function()
         rag.PC2EXEHeadHidden = true
     end
 end)
+
+-- Server SetNoDraw is replicated, but ensure the actual victim model stays
+-- invisible even if rendering prediction lags behind the execution state.
+hook.Add("PrePlayerDraw", "PC2_EXEExecutionHideVictim", function(ply)
+    if ply:GetNWBool("PC2_EXEBeingExecuted", false) then return true end
+end)
