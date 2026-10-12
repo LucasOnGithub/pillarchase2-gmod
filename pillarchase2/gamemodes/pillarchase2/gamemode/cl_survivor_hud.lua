@@ -1,378 +1,383 @@
--- Pillar Chase 2 - Survivor HUD.
--- Adapted from the PC2 NewStatsWork layout/data behaviour:
--- static playermodel viewport, health/heart states, stamina, earnings.
--- XP is intentionally not implemented.
---
--- Server-facing values for the future round/economy systems:
---   survivor:SetNWInt("PC2_Earnings", coins)
---   survivor:SetNWInt("PC2_EarningsMax", maxCoins)
---   survivor:SetNWFloat("PC2_Stamina", stamina)
---   survivor:SetNWFloat("PC2_MaxStamina", maxStamina)
---   monster:SetNWBool("PC2_IsMonster", true)
--- Any player, NPC, or nextbot explicitly marked as a monster can drive
--- the heart proximity pulse. Ordinary players never count as monsters.
-
+-- Pillar Chase 2 survivor HUD -- layout based on the game's NewStats GUI.
+-- Visual layout only: XP/level progression is intentionally NOT implemented.
+-- Existing gameplay values:
+--    player:SetNWFloat("PC2_Stamina", value)
+--    player:SetNWFloat("PC2_MaxStamina", value)
+--    player:SetNWInt("PC2_Earnings", value)
+--    player:SetNWInt("PC2_EarningsMax", value)
+--    monster:SetNWBool("PC2_IsMonster", true)  -- heartbeat proximity source
+-- Health uses player:Health() / player:GetMaxHealth().
 if SERVER then return end
 
-local ASSETS = "Server/RoundHandler/GameGui/NewStats/SelfIcon/"
-local STUFF = ASSETS .. "ViewportFrame/NewStatsWork/Stuff/"
-local textures = {
-    background = Material("Server/RoundHandler/GameGui/NewStats/SelfIcon.png", "smooth"),
-    ring       = Material(ASSETS .. "Heart.png", "smooth"),
-    earnings   = Material(ASSETS .. "Earning.png", "smooth"),
-    heart      = {
+local PATH = "Server/RoundHandler/GameGui/NewStats/SelfIcon/"
+local STUFF = PATH .. "ViewportFrame/NewStatsWork/Stuff/"
+
+local art = {
+    splash   = Material("Server/RoundHandler/GameGui/NewStats/SelfIcon.png", "smooth"),
+    ring     = Material(PATH .. "Heart.png", "smooth"),
+    currency = Material(PATH .. "Earning.png", "smooth"),
+    heart = {
         Material(STUFF .. "Heart1.png", "smooth"),
         Material(STUFF .. "Heart2.png", "smooth"),
         Material(STUFF .. "Heart3.png", "smooth")
     },
-    stamina    = {
+    stamina = {
         Material(STUFF .. "Stamina1.png", "smooth"),
         Material(STUFF .. "Stamina2.png", "smooth"),
         Material(STUFF .. "Stamina3.png", "smooth")
     },
-    shockwave  = Material(STUFF .. "HeartShockwave.png", "smooth")
+    shock = Material(STUFF .. "HeartShockwave.png", "smooth")
 }
 
 local WHITE = Color(255, 255, 255)
-local HEALTH_GOOD = Color(135, 255, 135)
-local HEALTH_MID = Color(255, 225, 120)
-local HEALTH_BAD = Color(255, 135, 135)
-local STAMINA_GOOD = Color(255, 200, 75)
-local STAMINA_MID = Color(185, 125, 75)
-local STAMINA_BAD = Color(125, 65, 25)
-local EARNINGS_COLOR = Color(238, 49, 156)
-local OUTLINE = Color(2, 8, 13, 230)
+local SHADOW = Color(0, 0, 0, 220)
+local STAMINA_YELLOW = Color(255, 187, 62)
+local HEALTH_RED = Color(248, 62, 73)
+local EARNINGS_PINK = Color(250, 39, 152)
+local SOFT_GREY = Color(211, 221, 227)
+local HEALTH_TEXT = {
+    Color(135, 255, 135),
+    Color(255, 225, 120),
+    Color(255, 135, 135)
+}
 
--- Approximate 3D audio/visual detection distance in Source units.
--- No monster role system is present yet, so this remains a calm HUD
--- until an entity is marked with PC2_IsMonster.
-local HEARTBEAT_RANGE = 1800
-local nextProximityScan = 0
-local monsterProximity = 0
-local heartbeatPhase = 0
-local lastHeartbeatTime = RealTime()
-local previousHealthState
-local healthShockTime = -100
-local root
-local portrait
-local currentModel
-local currentScreenHeight
+-- These are local HUD design coordinates in a 358x345 reference layout.
+-- They scale as a group on different screen heights.
+local W, H = 358, 345
+local monsterRange = 1800
+local proximity = 0
+local nextMonsterScan = 0
+local pulsePhase = 0
+local pulseTime = RealTime()
+local prevHeartState
+local shockStarted = -100
 
-local function scaled(value, scale)
-    return math.floor(value * scale + 0.5)
+local panel, modelView, modelPath, portraitSkin
+local cachedScrH
+
+local function UIscale()
+    return math.Clamp(ScrH() / 1080, 0.67, 1.45)
 end
 
-local function drawImage(material, x, y, w, h, tint)
-    tint = tint or WHITE
-    surface.SetDrawColor(tint.r, tint.g, tint.b, tint.a or 255)
-    surface.SetMaterial(material)
-    surface.DrawTexturedRect(x, y, w, h)
+local function S(value)
+    return math.floor(value * UIscale() + 0.5)
 end
 
-local function drawImageCentered(material, x, y, w, h, tint)
-    drawImage(material, x - w / 2, y - h / 2, w, h, tint)
+local function showImage(texture, x, y, w, h, color)
+    color = color or WHITE
+    surface.SetMaterial(texture)
+    surface.SetDrawColor(color.r, color.g, color.b, color.a or 255)
+    surface.DrawTexturedRect(S(x), S(y), S(w), S(h))
 end
 
-local function clampRatio(current, maximum)
+local function centerImage(texture, x, y, w, h, color)
+    showImage(texture, x - w / 2, y - h / 2, w, h, color)
+end
+
+local function ratio(value, maximum)
     if maximum <= 0 then return 0 end
-    return math.Clamp(current / maximum, 0, 1)
+    return math.Clamp(value / maximum, 0, 1)
 end
 
-local function getState(ratio)
-    if ratio >= 0.6 then return 1 end
-    if ratio >= 0.25 then return 2 end
+local function damageState(value)
+    if value >= 0.6 then return 1 end
+    if value >= 0.25 then return 2 end
     return 3
 end
 
-local function ringSegment(cx, cy, inside, outside, beginAngle, endAngle)
-    local a = math.rad(beginAngle)
-    local b = math.rad(endAngle)
-    surface.DrawPoly({
-        { x = cx + math.cos(a) * inside,  y = cy + math.sin(a) * inside },
-        { x = cx + math.cos(a) * outside, y = cy + math.sin(a) * outside },
-        { x = cx + math.cos(b) * outside, y = cy + math.sin(b) * outside },
-        { x = cx + math.cos(b) * inside,  y = cy + math.sin(b) * inside }
+local function fonts()
+    if cachedScrH == ScrH() then return end
+    cachedScrH = ScrH()
+    surface.CreateFont("PC2_StatsRef_Name", {
+        font = "Georgia", size = S(19), weight = 800, antialias = true
     })
-end
-
--- Two-half circular meter equivalent to the PC2 UIGradient health/stamina bars.
-local function drawProgress(cx, cy, radius, fraction, color, scale)
-    local outer = radius * scale
-    local inner = outer - 5 * scale
-    local segments = 72
-    local progress = math.Clamp(fraction, 0, 1) * segments
-
-    draw.NoTexture()
-    surface.SetDrawColor(20, 33, 46, 220)
-    for i = 0, segments - 1 do
-        ringSegment(cx, cy, inner, outer, -90 + i * 360 / segments, -90 + (i + 1) * 360 / segments)
-    end
-
-    surface.SetDrawColor(color.r, color.g, color.b, 255)
-    for i = 0, math.ceil(progress) - 1 do
-        local portion = math.Clamp(progress - i, 0, 1)
-        if portion > 0 then
-            ringSegment(cx, cy, inner, outer, -90 + i * 360 / segments, -90 + (i + portion) * 360 / segments)
-        end
-    end
-end
-
-local function getHudScale()
-    return math.Clamp(ScrH() / 1080, 0.68, 1.20)
-end
-
-local function refreshFonts()
-    if currentScreenHeight == ScrH() then return end
-    currentScreenHeight = ScrH()
-    local scale = getHudScale()
-    surface.CreateFont("PC2_StatsPlayerName", {
-        font = "Trebuchet MS", size = scaled(19, scale),
-        weight = 900, antialias = true
+    surface.CreateFont("PC2_StatsRef_Number", {
+        font = "Trebuchet MS", size = S(25), weight = 1000, antialias = true
     })
-    surface.CreateFont("PC2_StatsNumber", {
-        font = "Trebuchet MS", size = scaled(18, scale),
-        weight = 900, antialias = true
-    })
-    surface.CreateFont("PC2_StatsLabel", {
-        font = "Trebuchet MS", size = scaled(11, scale),
-        weight = 850, antialias = true
+    surface.CreateFont("PC2_StatsRef_XP", {
+        font = "Trebuchet MS", size = S(16), weight = 950, antialias = true
     })
 end
 
 local function isSurvivor(ply)
-    if not IsValid(ply) or not ply:Alive() then return false end
+    if not IsValid(ply) or not ply:IsPlayer() or not ply:Alive() then return false end
     if ply:GetNWBool("PC2_IsMonster", false) then return false end
-
-    local gamemode = GAMEMODE
-    if gamemode and gamemode.IsPC2Survivor then
-        return gamemode:IsPC2Survivor(ply)
+    if GAMEMODE and GAMEMODE.IsPC2Survivor then
+        return GAMEMODE:IsPC2Survivor(ply)
     end
-
     return true
 end
 
-local function scanMonsterProximity(ply)
-    if CurTime() < nextProximityScan then return end
-    nextProximityScan = CurTime() + 0.25
-    local nearest = HEARTBEAT_RANGE
-    local origin = ply:GetPos()
+local function monsterDistance(ply)
+    if CurTime() < nextMonsterScan then return end
+    nextMonsterScan = CurTime() + 0.25
+    local dist = monsterRange
+    local position = ply:GetPos()
+    for _, ent in ipairs(ents.GetAll()) do
+        if ent ~= ply and ent:GetNWBool("PC2_IsMonster", false)
+                and (not ent:IsPlayer() or ent:Alive()) then
+            dist = math.min(dist, position:Distance(ent:GetPos()))
+        end
+    end
+    proximity = math.Clamp(1 - dist / monsterRange, 0, 1)
+end
 
-    for _, entity in ipairs(ents.GetAll()) do
-        if entity ~= ply and entity:GetNWBool("PC2_IsMonster", false) then
-            if entity:IsPlayer() and not entity:Alive() then continue end
+local function heartBeat()
+    local now = RealTime()
+    local delta = math.Clamp(now - pulseTime, 0, 0.1)
+    pulseTime = now
+    pulsePhase = (pulsePhase + delta * Lerp(proximity, 66, 142) / 60) % 1
+    local beat1 = math.exp(-((pulsePhase - 0.065) / 0.055) ^ 2)
+    local beat2 = 0.67 * math.exp(-((pulsePhase - 0.25) / 0.07) ^ 2)
+    return math.max(beat1, beat2) * (0.035 + 0.19 * proximity)
+end
 
-            local distance = origin:Distance(entity:GetPos())
-            if distance < nearest then
-                nearest = distance
+local function quadAnnulus(cx, cy, r0, r1, a, b)
+    local ca, sa = math.cos(a), math.sin(a)
+    local cb, sb = math.cos(b), math.sin(b)
+    surface.DrawPoly({
+        { x = cx + r0 * ca, y = cy + r0 * sa },
+        { x = cx + r1 * ca, y = cy + r1 * sa },
+        { x = cx + r1 * cb, y = cy + r1 * sb },
+        { x = cx + r0 * cb, y = cy + r0 * sb }
+    })
+end
+
+-- Draw a colored ring like the screenshot: subtle unfilled track, glow,
+-- then a bright arc starting at twelve o'clock. Not the old horizontal row.
+local function circularMeter(x, y, rad, percent, ink, background)
+    local scale = UIscale()
+    local cx, cy = S(x), S(y)
+    local outer, inner = rad * scale, (rad - 5) * scale
+    local divisions = 66
+    local filled = math.Clamp(percent, 0, 1) * divisions
+    local starts = -math.pi / 2
+    draw.NoTexture()
+
+    surface.SetDrawColor(24, 27, 28, 188)
+    for j = 0, divisions - 1 do
+        local a = starts + j * math.pi * 2 / divisions
+        quadAnnulus(cx, cy, inner, outer, a, a + 2 * math.pi / divisions)
+    end
+
+    if filled > 0 then
+        surface.SetDrawColor(ink.r, ink.g, ink.b, 40)
+        for j = 0, math.ceil(filled) - 1 do
+            local b = math.Clamp(filled - j, 0, 1)
+            if b > 0 then
+                local a = starts + j * math.pi * 2 / divisions
+                quadAnnulus(cx, cy, outer - 2 * scale, outer + 5 * scale,
+                    a, a + b * math.pi * 2 / divisions)
+            end
+        end
+        surface.SetDrawColor(ink.r, ink.g, ink.b, 255)
+        for j = 0, math.ceil(filled) - 1 do
+            local b = math.Clamp(filled - j, 0, 1)
+            if b > 0 then
+                local a = starts + j * math.pi * 2 / divisions
+                quadAnnulus(cx, cy, inner, outer,
+                    a, a + b * math.pi * 2 / divisions)
             end
         end
     end
-
-    monsterProximity = math.Clamp(1 - nearest / HEARTBEAT_RANGE, 0, 1)
 end
 
--- A quiet resting double beat, speeding up and growing as the monster closes in.
-local function heartbeatAmount()
-    local now = RealTime()
-    local dt = math.min(now - lastHeartbeatTime, 0.1)
-    lastHeartbeatTime = now
-    local bpm = Lerp(monsterProximity, 66, 142)
-    heartbeatPhase = (heartbeatPhase + math.max(dt, 0) * bpm / 60) % 1
-
-    local first = math.exp(-((heartbeatPhase - 0.06) / 0.06) ^ 2)
-    local second = math.exp(-((heartbeatPhase - 0.26) / 0.075) ^ 2) * 0.65
-    return math.max(first, second) * (0.055 + monsterProximity * 0.20)
+local function showCount(number, x, y, color)
+    draw.SimpleTextOutlined(
+        tostring(math.floor(number)), "PC2_StatsRef_Number",
+        S(x), S(y), color, TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER,
+        math.max(1, S(1.8)), SHADOW
+    )
 end
 
-local function syncPortrait(ply)
-    if not IsValid(portrait) then return end
+-- 3D panel is an actual clone of the player's model, not their Steam avatar.
+-- Pose and camera are frozen; only model/skin/bodygroup/color updates.
+local function refreshPortrait(ply)
+    if not IsValid(modelView) then return end
+    local wanted = ply:GetModel()
+    if not wanted or wanted == "" then return end
 
-    local modelPath = ply:GetModel()
-    if not modelPath or modelPath == "" then return end
-    if modelPath ~= currentModel or not IsValid(portrait.Entity) then
-        currentModel = modelPath
-        portrait:SetModel(modelPath)
+    if wanted ~= modelPath or not IsValid(modelView.Entity) then
+        modelPath = wanted
+        modelView:SetModel(wanted)
+        local ent = modelView.Entity
+        if IsValid(ent) then
+            local idle = ent:LookupSequence("idle_all_01")
+            if idle == -1 then idle = ent:SelectWeightedSequence(ACT_IDLE) end
+            if idle and idle >= 0 then ent:ResetSequence(idle) end
+            ent:SetCycle(0)
+            ent:SetPlaybackRate(0)
+            ent:SetAngles(Angle(0, 19, 0))
 
-        local entity = portrait.Entity
-        if IsValid(entity) then
-            -- No automatic idle animation or spinning: this is a still viewport.
-            local seq = entity:LookupSequence("idle_all_01")
-            if seq < 0 then seq = entity:SelectWeightedSequence(ACT_IDLE) end
-            if seq and seq >= 0 then entity:ResetSequence(seq) end
-            entity:SetCycle(0)
-            entity:SetPlaybackRate(0)
-            entity:SetAngles(Angle(0, 25, 0))
-
-            local mins, maxs = entity:GetRenderBounds()
-            local height = math.max(maxs.z - mins.z, 45)
+            local mins, maxs = ent:GetRenderBounds()
+            local tall = math.max(42, maxs.z - mins.z)
             local center = (mins + maxs) * 0.5
-            portrait:SetFOV(40)
-            portrait:SetLookAt(center + Vector(0, 0, height * 0.02))
-            portrait:SetCamPos(center + Vector(height * 0.85, -height * 0.85, height * 0.07))
+            local look = Vector(center.x, center.y, mins.z + tall * 0.67)
+            modelView:SetFOV(36)
+            modelView:SetLookAt(look)
+            modelView:SetCamPos(look + Vector(tall * 0.72, -tall * 0.67, tall * 0.12))
         end
     end
 
-    local entity = portrait.Entity
-    if IsValid(entity) then
-        entity:SetSkin(ply:GetSkin())
-        for index = 0, math.min(ply:GetNumBodyGroups() - 1, 30) do
-            entity:SetBodygroup(index, ply:GetBodygroup(index))
-        end
-        entity.GetPlayerColor = function()
-            if IsValid(ply) then return ply:GetPlayerColor() end
-            return Vector(1, 1, 1)
-        end
+    local ent = modelView.Entity
+    if not IsValid(ent) then return end
+    ent:SetSkin(ply:GetSkin())
+    for id = 0, math.min(ply:GetNumBodyGroups() - 1, 30) do
+        ent:SetBodygroup(id, ply:GetBodygroup(id))
+    end
+    ent.GetPlayerColor = function()
+        if IsValid(ply) then return ply:GetPlayerColor() end
+        return Vector(1, 1, 1)
     end
 end
 
-local function createHud()
-    if IsValid(root) then root:Remove() end
-    currentModel = nil
-    currentScreenHeight = nil
-    previousHealthState = nil
-    nextProximityScan = 0
+local function createSurvivorHUD()
+    if IsValid(panel) then panel:Remove() end
+    modelPath = nil
+    cachedScrH = nil
+    prevHeartState = nil
+    nextMonsterScan = 0
 
-    root = vgui.Create("DPanel")
-    root:SetMouseInputEnabled(false)
-    root:SetKeyboardInputEnabled(false)
-    root:SetPaintBackground(false)
-    root:SetZPos(-100)
+    panel = vgui.Create("DPanel")
+    panel:SetMouseInputEnabled(false)
+    panel:SetKeyboardInputEnabled(false)
+    panel:SetPaintBackground(false)
+    panel:SetZPos(-100)
 
-    portrait = vgui.Create("DModelPanel", root)
-    portrait:SetMouseInputEnabled(false)
-    portrait:SetKeyboardInputEnabled(false)
-    portrait.LayoutEntity = function() end
+    modelView = vgui.Create("DModelPanel", panel)
+    modelView:SetMouseInputEnabled(false)
+    modelView:SetKeyboardInputEnabled(false)
+    modelView.LayoutEntity = function() end
 
     local function resize()
-        local scale = getHudScale()
-        root:SetSize(scaled(434, scale), scaled(178, scale))
-        root:SetPos(scaled(18, scale), ScrH() - scaled(196, scale))
-        portrait:SetPos(scaled(7, scale), scaled(13, scale))
-        portrait:SetSize(scaled(141, scale), scaled(156, scale))
-        refreshFonts()
+        panel:SetSize(S(W), S(H))
+        panel:SetPos(S(6), ScrH() - S(H) - S(7))
+        modelView:SetPos(S(10), S(92))
+        modelView:SetSize(S(187), S(202))
+        fonts()
     end
-
     resize()
 
-    root.Think = function(self)
+    panel.Think = function(self)
         local ply = LocalPlayer()
         local visible = isSurvivor(ply)
         self:SetVisible(visible)
         if not visible then return end
 
-        local scale = getHudScale()
-        local newWidth, newHeight = scaled(434, scale), scaled(178, scale)
-        if self:GetWide() ~= newWidth or self:GetTall() ~= newHeight
-            or self.y ~= ScrH() - scaled(196, scale) then
+        if self:GetWide() ~= S(W) or self:GetTall() ~= S(H)
+                or self.y ~= ScrH() - S(H) - S(7) then
             resize()
         end
-        syncPortrait(ply)
+        refreshPortrait(ply)
     end
 
-    root.Paint = function(self, w, h)
-        local scale = getHudScale()
-        draw.RoundedBox(scaled(14, scale), 0, 0, w, h, Color(5, 15, 25, 212))
-        draw.RoundedBox(scaled(12, scale), scaled(4, scale), scaled(4, scale),
-            w - scaled(8, scale), h - scaled(8, scale), Color(11, 30, 47, 178))
-        drawImage(textures.background, 0, 0, scaled(178, scale), scaled(178, scale),
-            Color(255, 255, 255, 235))
-        surface.SetDrawColor(76, 117, 133, 45)
-        surface.DrawRect(scaled(149, scale), scaled(13, scale), scaled(1, scale), h - scaled(28, scale))
+    -- Only the game's dark-blue ink texture is behind the model.
+    -- No large rectangular panel, separators or HUD labels.
+    panel.Paint = function(self, w, h)
+        showImage(art.splash, -23, 44, 353, 292, Color(255, 255, 255, 255))
     end
 
-    root.PaintOver = function(self)
+    -- PaintOver renders above the portrait so the name and meters remain crisp.
+    panel.PaintOver = function(self, w, h)
         local ply = LocalPlayer()
         if not isSurvivor(ply) then return end
-        local scale = getHudScale()
-        local function S(value) return scaled(value, scale) end
 
-        local maxHealth = math.max(ply:GetMaxHealth(), 1)
-        local health = math.max(0, ply:Health())
-        local healthRatio = clampRatio(health, maxHealth)
-        local healthState = getState(healthRatio)
-        if previousHealthState and healthState > previousHealthState then
-            healthShockTime = RealTime()
+        local maxHP = math.max(ply:GetMaxHealth(), 1)
+        local hp = math.max(0, ply:Health())
+        local hpRatio = ratio(hp, maxHP)
+        local hpState = damageState(hpRatio)
+        if prevHeartState and hpState > prevHeartState then
+            shockStarted = RealTime()
         end
-        previousHealthState = healthState
+        prevHeartState = hpState
 
-        local staminaMax = math.max(ply:GetNWFloat("PC2_MaxStamina", 100), 1)
-        local stamina = math.Clamp(ply:GetNWFloat("PC2_Stamina", staminaMax), 0, staminaMax)
-        local staminaRatio = clampRatio(stamina, staminaMax)
-        local staminaState = getState(staminaRatio)
+        local maxStamina = math.max(ply:GetNWFloat("PC2_MaxStamina", 100), 1)
+        local stamina = math.Clamp(ply:GetNWFloat("PC2_Stamina", maxStamina), 0, maxStamina)
+        local staminaRatio = ratio(stamina, maxStamina)
+        local staminaState = damageState(staminaRatio)
+
         local earningsMax = math.max(ply:GetNWInt("PC2_EarningsMax", 100), 1)
-        local earnings = math.max(0, ply:GetNWInt("PC2_Earnings", 0))
-        local earningsRatio = clampRatio(earnings, earningsMax)
+        local earnings = math.max(ply:GetNWInt("PC2_Earnings", 0), 0)
+        local earningsRatio = ratio(earnings, earningsMax)
 
-        scanMonsterProximity(ply)
-        local pulse = heartbeatAmount()
+        monsterDistance(ply)
+        local beat = heartBeat()
 
         local name = ply:Nick()
-        if #name > 19 then name = string.sub(name, 1, 18) .. "..." end
-        draw.SimpleTextOutlined(name, "PC2_StatsPlayerName", S(162), S(13),
-            WHITE, TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP, 1, OUTLINE)
-        draw.SimpleText("SURVIVOR", "PC2_StatsLabel", S(163), S(37),
-            Color(125, 188, 202), TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
+        if #name > 18 then name = string.sub(name, 1, 17) .. "..." end
+        draw.SimpleTextOutlined(name, "PC2_StatsRef_Name", S(110), S(99),
+            WHITE, TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER, math.max(1, S(1)), SHADOW)
 
-        local cxHealth, cxStamina, cxEarning = S(195), S(285), S(374)
-        local cy = S(105)
-        local healthColor = ({ HEALTH_GOOD, HEALTH_MID, HEALTH_BAD })[healthState]
-        local staminaColor = ({ STAMINA_GOOD, STAMINA_MID, STAMINA_BAD })[staminaState]
+        -- Positions taken from the supplied in-game screenshot:
+        -- stamina above, health to the right, earnings directly underneath.
+        local staminaX, staminaY = 241, 99
+        local healthX, healthY = 305, 157
+        local earningsX, earningsY = 235, 218
 
-        drawImageCentered(textures.ring, cxHealth, cy, S(76), S(80), Color(215, 225, 231, 80))
-        drawImageCentered(textures.ring, cxStamina, cy, S(76), S(80), Color(215, 225, 231, 80))
-        drawProgress(cxHealth, cy, 34, healthRatio, healthColor, scale)
-        drawProgress(cxStamina, cy, 34, staminaRatio, staminaColor, scale)
-        drawProgress(cxEarning, cy, 34, earningsRatio, EARNINGS_COLOR, scale)
+        -- Faint, dark circles show through the gaps in the colorful arcs.
+        draw.RoundedBox(S(37), S(staminaX - 37), S(staminaY - 37),
+            S(74), S(74), Color(10, 11, 13, 150))
+        draw.RoundedBox(S(40), S(healthX - 40), S(healthY - 40),
+            S(80), S(80), Color(10, 11, 13, 150))
+        draw.RoundedBox(S(37), S(earningsX - 37), S(earningsY - 37),
+            S(74), S(74), Color(10, 11, 13, 150))
 
-        -- Draw the anatomical heart as a static image except for its heartbeat size.
-        local heartWidth = S(41) * (1 + pulse)
-        local heartHeight = S(49) * (1 + pulse)
-        drawImageCentered(textures.heart[healthState], cxHealth, cy, heartWidth, heartHeight)
+        circularMeter(staminaX, staminaY, 37, staminaRatio, STAMINA_YELLOW)
+        circularMeter(healthX, healthY, 40, hpRatio, HEALTH_RED)
+        circularMeter(earningsX, earningsY, 37, earningsRatio, EARNINGS_PINK)
 
-        -- Reproduce the PC2 change-of-heart-state shockwave, without requiring
-        -- the missing Roblox shatter sounds.
-        local shockElapsed = RealTime() - healthShockTime
-        if shockElapsed >= 0 and shockElapsed < 0.4 then
-            local progress = shockElapsed / 0.4
-            local size = S(28 + 105 * progress)
-            local fade = math.floor((1 - progress) * 65)
-            surface.SetDrawColor(255, 135, 135, fade)
-            surface.SetMaterial(textures.shockwave)
-            surface.DrawTexturedRectRotated(cxHealth, cy, size, size, progress * 180)
+        -- Artwork stays underneath the numbers, just like PC2.
+        centerImage(art.stamina[staminaState], staminaX, staminaY, 36, 42,
+            Color(208, 152, 55, 230))
+        centerImage(art.heart[hpState], healthX, healthY, 36 * (1 + beat),
+            44 * (1 + beat))
+
+        local shockAge = RealTime() - shockStarted
+        if shockAge >= 0 and shockAge < 0.4 then
+            local t = shockAge / 0.4
+            local size = 42 + t * 96
+            surface.SetMaterial(art.shock)
+            surface.SetDrawColor(255, 110, 110, math.floor((1 - t) * 53))
+            surface.DrawTexturedRectRotated(S(healthX), S(healthY), S(size), S(size), t * 180)
         end
 
-        drawImageCentered(textures.stamina[staminaState], cxStamina, cy, S(43), S(52))
-        drawImageCentered(textures.earnings, cxEarning, cy, S(58), S(58))
+        centerImage(art.currency, earningsX, earningsY, 58, 58)
+        showCount(stamina, staminaX, staminaY + 5, Color(255, 218, 145))
+        showCount(hp, healthX, healthY + 4, HEALTH_TEXT[hpState])
+        showCount(earnings, earningsX, earningsY + 5, WHITE)
 
-        draw.SimpleText(tostring(math.floor(health)), "PC2_StatsNumber",
-            cxHealth, S(141), healthColor, TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
-        draw.SimpleText(tostring(math.floor(stamina)), "PC2_StatsNumber",
-            cxStamina, S(141), staminaColor, TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
-        draw.SimpleText(tostring(math.floor(earnings)), "PC2_StatsNumber",
-            cxEarning, S(141), EARNINGS_COLOR, TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
-
-        draw.SimpleText("HEALTH", "PC2_StatsLabel", cxHealth, S(161),
-            WHITE, TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
-        draw.SimpleText("STAMINA", "PC2_StatsLabel", cxStamina, S(161),
-            WHITE, TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
-        draw.SimpleText("EARNINGS", "PC2_StatsLabel", cxEarning, S(161),
-            WHITE, TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+        -- The PC2 XP slot is included visually for layout accuracy only.
+        -- No XP values or level system are fabricated or tracked.
+        draw.RoundedBox(S(3), S(36), S(303), S(161), S(29), Color(0, 0, 0, 182))
+        draw.RoundedBox(S(2), S(40), S(308), S(147), S(20), Color(18, 18, 18, 175))
+        draw.NoTexture()
+        surface.SetDrawColor(250, 164, 107, 240)
+        surface.DrawPoly({
+            { x = S(42), y = S(308) },
+            { x = S(108), y = S(308) },
+            { x = S(101), y = S(328) },
+            { x = S(42), y = S(328) }
+        })
+        draw.SimpleTextOutlined("XP", "PC2_StatsRef_XP",
+            S(73), S(318), Color(255, 228, 194), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER,
+            math.max(1, S(1)), SHADOW)
+        draw.SimpleTextOutlined("-- / --", "PC2_StatsRef_XP",
+            S(143), S(318), WHITE, TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER,
+            math.max(1, S(1)), SHADOW)
     end
 end
 
 hook.Add("Think", "PC2_CreateSurvivorHUD", function()
-    if not IsValid(root) and IsValid(LocalPlayer()) then
-        createHud()
+    if not IsValid(panel) and IsValid(LocalPlayer()) then
+        createSurvivorHUD()
     end
 end)
 
 hook.Add("OnReloaded", "PC2_ReloadSurvivorHUD", function()
-    if IsValid(root) then root:Remove() end
-    root = nil
+    if IsValid(panel) then panel:Remove() end
+    panel = nil
 end)
 
-hook.Add("HUDShouldDraw", "PC2_HideDefaultHealth", function(name)
-    if name == "CHudHealth" or name == "CHudBattery" then
-        return false
-    end
+hook.Add("HUDShouldDraw", "PC2_HideDefaultSurvivorHud", function(name)
+    if name == "CHudHealth" or name == "CHudBattery" then return false end
 end)
