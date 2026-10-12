@@ -8,6 +8,15 @@ local GRAB_AT = 0.69
 local DECAPITATE_AT = 2.04
 local DEFAULT_DURATION = 2.50
 local SCREAM = "Player/DeathScream.mp3"
+-- The execution bypasses TakeDamageInfo until the finishing blow, so
+-- sv_status_effects' PostEntityTakeDamage hook will not play M1 impact.
+-- Emit the same hit clips here, directly from the victim at contact.
+local HIT_SOUNDS = {
+    "Monsters/Hit1.wav",
+    "Monsters/Hit2.wav",
+    "Monsters/Hit3.wav",
+    "Monsters/Hit4.wav"
+}
 local active = {}
 local ZERO = Vector(0, 0, 0)
 
@@ -95,25 +104,62 @@ local function hideHead(rag)
     rag:SetNWBool("PC2_EXEHeadless", true)
 end
 
-local function boneWorld(rag, name)
+-- SetupBones() is not available on the server for every entity class.
+-- GetBonePosition normally works from the engine's cached server pose;
+-- GetBoneMatrix provides a fallback when the cached position is the origin.
+local function boneWorld(ent, name)
+    if not IsValid(ent) then return end
+    local bone = ent:LookupBone(name)
+    if bone == nil or bone < 0 then return end
+
+    local pos = ent:GetBonePosition(bone)
+    if isvector(pos) and not pos:IsZero()
+        and pos:DistToSqr(ent:GetPos()) > 0.01 then
+        return pos
+    end
+
+    local matrix = ent:GetBoneMatrix(bone)
+    if matrix then
+        pos = matrix:GetTranslation()
+        if isvector(pos) and not pos:IsZero()
+            and pos:DistToSqr(ent:GetPos()) > 0.01 then
+            return pos
+        end
+    end
+end
+
+-- A ragdoll's PHYSICS head is more dependable than its animation bone
+-- cache on the dedicated server, especially while positioning every tick.
+local function ragdollHeadPosition(rag)
     if not IsValid(rag) then return end
-    local bone = rag:LookupBone(name)
-    if bone == nil then return end
-    rag:SetupBones()
-    local pos = rag:GetBonePosition(bone)
-    if isvector(pos) and not pos:IsZero() then return pos end
+    local bone = headBone(rag)
+    if bone ~= nil and bone >= 0 then
+        local physBone = rag:TranslateBoneToPhysBone(bone)
+        if physBone ~= nil and physBone >= 0 then
+            local phys = rag:GetPhysicsObjectNum(physBone)
+            if IsValid(phys) then return phys:GetPos() end
+        end
+        local pos = rag:GetBonePosition(bone)
+        if isvector(pos) and not pos:IsZero()
+            and pos:DistToSqr(rag:GetPos()) > 0.01 then
+            return pos
+        end
+    end
+    return rag:GetPos() + Vector(0, 0, 63)
 end
 
 local function handsPosition(pill, attacker)
-    if not IsValid(pill) then return end
+    if not IsValid(attacker) then return end
+    local fallback = attacker:GetPos() + attacker:GetForward() * 45
+        + Vector(0, 0, 60)
+    if not IsValid(pill) then return fallback end
     local puppet = pill:GetPuppet()
-    if not IsValid(puppet) then return end
-    puppet:SetupBones()
+    if not IsValid(puppet) then return fallback end
+
     local left = boneWorld(puppet, "LeftHand")
     local right = boneWorld(puppet, "RightHand")
     if left and right then return (left + right) * 0.5 end
-    if left or right then return left or right end
-    return attacker:GetPos() + attacker:GetForward() * 45 + Vector(0, 0, 60)
+    return left or right or fallback
 end
 
 -- Translate *every* physical bone so the victim's HEAD follows the
@@ -124,12 +170,7 @@ local function holdHead(state)
     local where = handsPosition(state.pill, state.attacker)
     if not where then return end
 
-    rag:SetupBones()
-    local head = headBone(rag)
-    local headPos = head and select(1, rag:GetBonePosition(head))
-    if not isvector(headPos) or headPos:IsZero() then
-        headPos = rag:GetPos() + Vector(0, 0, 63)
-    end
+    local headPos = ragdollHeadPosition(rag)
     local shift = where - headPos
     if shift:LengthSqr() < 0.0001 then return end
     for i = 0, rag:GetPhysicsObjectCount() - 1 do
@@ -139,7 +180,8 @@ local function holdHead(state)
             phys:SetVelocity(ZERO)
         end
     end
-    rag:InvalidateBoneCache()
+    -- Physics objects drive the ragdoll pose. No server-side SetupBones
+    -- or bone-cache rebuild is required here.
 end
 
 local function clear(state, keepBody)
@@ -196,12 +238,7 @@ local function finishVictim(state)
 
     local gorePos = victim:WorldSpaceCenter() + Vector(0, 0, 23)
     if IsValid(held) then
-        local h = headBone(held)
-        if h then
-            held:SetupBones()
-            local at = held:GetBonePosition(h)
-            if isvector(at) and not at:IsZero() then gorePos = at end
-        end
+        gorePos = ragdollHeadPosition(held) or gorePos
     end
 
     local corpse = makeRagdoll(victim,
@@ -334,6 +371,12 @@ function EXEC.Start(attacker, pill, victim)
     pill.PC2_EXEBusyUntil = state.endTime
     pill.PC2_EXENextAttack = state.endTime
     pill:PillSound("jumpscare")
+
+    -- Both sounds play on the victim at the precise moment M1 connects.
+    -- Separate channels avoid the scream replacing the impact or vice versa.
+    victim:EmitSound(HIT_SOUNDS[math.random(#HIT_SOUNDS)],
+        75, 100, 1, CHAN_BODY)
+    victim:EmitSound(SCREAM, 85, 100, 1, CHAN_VOICE)
     return true
 end
 
@@ -379,7 +422,6 @@ hook.Add("Think", "PC2_EXEExecutionUpdate", function()
             local elapsed = now - state.started
             if elapsed >= GRAB_AT and not state.grabbed then
                 state.grabbed = true
-                victim:EmitSound(SCREAM, 85, 100, 1, CHAN_VOICE)
             end
             if state.grabbed and not state.killed
                 and now >= (state.nextRagUpdate or 0) then
