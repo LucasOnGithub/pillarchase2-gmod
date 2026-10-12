@@ -100,6 +100,14 @@ local function activeTrapCount(ent)
     if SERVER and ent:GetNWInt("PC2_EXE_TrapCount", -1) ~= count then
         ent:SetNWInt("PC2_EXE_TrapCount", count)
     end
+    -- Mirror the count on the player, since UI state must not depend
+    -- on the networked pill entity appearing before its owner.
+    if SERVER then
+        local owner = ent:GetPillUser()
+        if IsValid(owner) and owner:GetNWInt("PC2_EXE_TrapCount", -1) ~= count then
+            owner:SetNWInt("PC2_EXE_TrapCount", count)
+        end
+    end
     return count
 end
 
@@ -395,8 +403,11 @@ pk_pills.register(ID, {
     initialize = function(ply, ent, puppet)
         if SERVER and IsValid(ply) and isEXE(ent) then
             ply:SetNWBool("PC2_IsMonster", true)
+            ply:SetNWString("PC2_MonsterForm", ID)
+            ply:SetNWEntity("PC2_ActiveMonsterPill", ent)
             ent.PC2_EXETraps = {}
             ent:SetNWInt("PC2_EXE_TrapCount", 0)
+            ply:SetNWInt("PC2_EXE_TrapCount", 0)
             ent.PC2_EXEStamina = STAMINA_MAX
             ent.PC2_EXESprinting = false
             ent.PC2_EXENextDrain = 0
@@ -610,6 +621,12 @@ if SERVER then
                 if not ply:GetNWBool("PC2_IsMonster", false) then
                     ply:SetNWBool("PC2_IsMonster", true)
                 end
+                if ply:GetNWString("PC2_MonsterForm", "") ~= ID then
+                    ply:SetNWString("PC2_MonsterForm", ID)
+                end
+                if ply:GetNWEntity("PC2_ActiveMonsterPill") ~= ent then
+                    ply:SetNWEntity("PC2_ActiveMonsterPill", ent)
+                end
                 -- End the charge on its original timestamp, regardless
                 -- of server Think timing. Begin the 0.60s walk-only period.
                 local chargeUntil = ent.PC2_EXETooSlowUntil or 0
@@ -653,10 +670,17 @@ if SERVER then
                     ent:SetNWFloat("PC2_EXE_SniffUntil", now + 2)
                     ent:PillSound("sniff")
                 end
-            elseif ply:GetNWBool("PC2_IsMonster", false) then
-                -- Restoring/changing form clears monster status and unfreezes
-                -- players who were caught during an interrupted kill.
-                ply:SetNWBool("PC2_IsMonster", false)
+            elseif ply:GetNWString("PC2_MonsterForm", "") == ID
+                or (ply:GetNWBool("PC2_IsMonster", false) and not IsValid(ent)) then
+                -- Clear EXE's replicated HUD identity when unmorphing.
+                if ply:GetNWString("PC2_MonsterForm", "") == ID then
+                    ply:SetNWString("PC2_MonsterForm", "")
+                    ply:SetNWEntity("PC2_ActiveMonsterPill", NULL)
+                    ply:SetNWInt("PC2_EXE_TrapCount", 0)
+                end
+                if not isEXE(ent) then
+                    ply:SetNWBool("PC2_IsMonster", false)
+                end
                 if ply:Alive() then ply:Freeze(false) end
             end
         end

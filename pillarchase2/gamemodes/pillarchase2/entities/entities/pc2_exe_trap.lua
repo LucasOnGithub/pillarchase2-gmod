@@ -164,4 +164,6 @@ function ENT:OnRemove()
         end
     end
     pill:SetNWInt("PC2_EXE_TrapCount", #traps)
+    local owner = pill:GetPillUser()
+    if IsValid(owner) then owner:SetNWInt("PC2_EXE_TrapCount", #traps) end
 end

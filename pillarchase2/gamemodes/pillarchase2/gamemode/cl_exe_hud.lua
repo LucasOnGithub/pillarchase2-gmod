@@ -33,12 +33,38 @@ local function px(v)
     return math.floor(v * scale() + 0.5)
 end
 
+-- pk_pills.getMappedEnt uses a Lua-side player field. On the client,
+-- it can be missing while the replicated costume/player data is loading.
+-- The server now also publishes the currently active EXE pill on the player.
 local function exePill(ply)
-    if not IsValid(ply) or not ply:Alive() or not pk_pills then return end
-    local pill = pk_pills.getMappedEnt(ply)
-    if IsValid(pill) and pill.GetPillForm and pill:GetPillForm() == "pc2_exe" then
-        return pill
+    if not IsValid(ply) or not ply:Alive() then return end
+
+    local networked = ply:GetNWEntity("PC2_ActiveMonsterPill")
+    if IsValid(networked) and networked.GetPillForm
+        and networked:GetPillForm() == "pc2_exe" then
+        return networked
     end
+
+    if pk_pills and pk_pills.getMappedEnt then
+        local mapped = pk_pills.getMappedEnt(ply)
+        if IsValid(mapped) and mapped.GetPillForm
+            and mapped:GetPillForm() == "pc2_exe" then
+            return mapped
+        end
+    end
+end
+
+local function isEXEMonster(ply)
+    if not IsValid(ply) or not ply:Alive() then return false end
+
+    -- The role marker allows the HUD to show as soon as a player morphs,
+    -- even if the costume entity is not available clientside yet.
+    if ply:GetNWBool("PC2_IsMonster", false)
+        and ply:GetNWString("PC2_MonsterForm", "") == "pc2_exe" then
+        return true
+    end
+
+    return IsValid(exePill(ply))
 end
 
 local function showImage(img, x, y, w, h, tint)
@@ -105,16 +131,10 @@ local function createHUD()
     end
     resize()
 
-    panel.Think = function(self)
-        local ply = LocalPlayer()
-        local show = IsValid(exePill(ply))
-        self:SetVisible(show)
-        if not show then return end
-        if self:GetWide() ~= px(352) or self:GetTall() ~= px(332)
-            or self.y ~= ScrH() - px(339) then
-            resize()
-        end
-    end
+    -- Keep sizing separate from visibility. Hidden GMod VGUI panels
+    -- may stop running their Think, so the global hook below must control
+    -- visibility even while the monster HUD is not on screen.
+    panel.PC2Resize = resize
 
     panel.Paint = function()
         -- Same ink-splash material as the survivor HUD reference.
@@ -125,8 +145,8 @@ local function createHUD()
 
     panel.PaintOver = function()
         local ply = LocalPlayer()
+        if not isEXEMonster(ply) then return end
         local pill = exePill(ply)
-        if not IsValid(pill) then return end
 
         local name = ply:Nick()
         if #name > 18 then name = string.sub(name, 1, 17) .. "..." end
@@ -138,7 +158,10 @@ local function createHUD()
         local stamina = math.Clamp(ply:GetNWFloat("PC2_Stamina", maximum), 0, maximum)
         local ratio = stamina / maximum
         local state = ratio >= .6 and 1 or ratio >= .25 and 2 or 3
-        local traps = math.Clamp(pill:GetNWInt("PC2_EXE_TrapCount", 0), 0, 5)
+        local traps = math.Clamp(IsValid(pill)
+            and pill:GetNWInt("PC2_EXE_TrapCount",
+                ply:GetNWInt("PC2_EXE_TrapCount", 0))
+            or ply:GetNWInt("PC2_EXE_TrapCount", 0), 0, 5)
 
         -- Amber stamina meter (105 max), purple trap counter (0..5).
         drawRing(295, 162, 41, ratio, gold)
@@ -175,7 +198,21 @@ local function createHUD()
 end
 
 hook.Add("Think", "PC2_CreateEXEMonsterHUD", function()
-    if not IsValid(panel) and IsValid(LocalPlayer()) then createHUD() end
+    local ply = LocalPlayer()
+    if not IsValid(ply) then return end
+
+    if not IsValid(panel) then createHUD() end
+    if not IsValid(panel) then return end
+
+    -- This hook keeps running even if the panel is hidden. It also
+    -- immediately hides the monster HUD after EXE is restored/removed.
+    local show = isEXEMonster(ply)
+    if panel:IsVisible() ~= show then panel:SetVisible(show) end
+    if show and panel.PC2Resize
+        and (panel:GetWide() ~= px(352) or panel:GetTall() ~= px(332)
+            or panel.y ~= ScrH() - px(339)) then
+        panel.PC2Resize()
+    end
 end)
 
 hook.Add("OnReloaded", "PC2_ReloadEXEMonsterHUD", function()
