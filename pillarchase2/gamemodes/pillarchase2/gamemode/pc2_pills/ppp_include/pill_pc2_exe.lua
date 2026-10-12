@@ -167,13 +167,16 @@ local function thornyGrave(ply, ent)
         or now < (ent.PC2_EXEBusyUntil or 0)
         or now < (ent.PC2_EXETooSlowUntil or 0) then return end
     ent.PC2_EXENextThorny = now + getSetting("thornyCooldown", "_ThornyGraveCooldown")
-    ent.PC2_EXEBusyUntil = now + 1.15
+    -- Source model's trap sequence: 122 frames at 60 FPS (~2.03 sec),
+    -- with PlantSeed at cycle .537 (~1.09 sec).
+    ent.PC2_EXEBusyUntil = now + 122 / 60
     ent:SetNWFloat("PC2_EXE_ThornyReady", ent.PC2_EXENextThorny)
+    ent:SetNWFloat("PC2_EXE_TrapCastingUntil", ent.PC2_EXEBusyUntil)
     ent:PillSound("deploy")
     animate(ent, "trap")
 
     -- The Nextbot creates its trap at PlantSeed (left hand animation event).
-    timer.Simple(.8, function()
+    timer.Simple((122 / 60) * 0.5371900797, function()
         if not isEXE(ent) or not ply:Alive() then return end
 
         local puppet = ent:GetPuppet()
@@ -213,16 +216,18 @@ local function tickTooSlow(ply, ent, now)
     for _, victim in ipairs(getVictims(ply, ent, 70, -0.25)) do
         ent.PC2_EXETooSlowGrabbed = true
         ent.PC2_EXETooSlowUntil = now
-        ent.PC2_EXEBusyUntil = now + 1.6
+        -- Bite clip: 210 frames @ 60 FPS; its named Bite and BiteEnd
+        -- events fire at cycles ~0.531 and ~0.612 respectively.
+        ent.PC2_EXEBusyUntil = now + 210 / 60 * 0.6125
         ent:SetNWFloat("PC2_EXE_TooSlowUntil", 0)
         ent:PillSound("grab")
         animate(ent, "bite")
         if victim:IsPlayer() then victim:Freeze(true) end
-        timer.Simple(.60, function()
+        timer.Simple(210 / 60 * 0.53110045, function()
             if not isEXE(ent) or not IsValid(victim) then return end
             damage(ply, ent, victim, getSetting("bite", "_TooSlowDamage"))
         end)
-        timer.Simple(1.3, function()
+        timer.Simple(210 / 60 * 0.61244017, function()
             if IsValid(victim) and victim:IsPlayer() then
                 victim:Freeze(false)
             end
@@ -277,7 +282,7 @@ pk_pills.register(ID, {
             bite = "bite",
             trap = "trap",
             charge = "charge",
-            charge_rate = 1.6 -- faster, looping Too Slow animation
+            charge_rate = 1.2 -- requested Too Slow charge speed (1.2x)
         }
     },
     -- Charge is played as EXE's base locomotion clip for the full boost.
@@ -312,6 +317,7 @@ pk_pills.register(ID, {
             ent.PC2_EXETooSlowUntil = 0
             ent:SetNWFloat("PC2_EXE_TooSlowReady", 0)
             ent:SetNWFloat("PC2_EXE_ThornyReady", 0)
+            ent:SetNWFloat("PC2_EXE_TrapCastingUntil", 0)
             ent:SetNWFloat("PC2_EXE_SniffUntil", 0)
         end
     end,
@@ -429,36 +435,105 @@ else
         end
     end)
 
+
+    -- The original DrGBase EXE HUD uses these four artwork names.
+    -- Ready and cooling-down each have their own image, unlike the
+    -- old text-only placeholder. They can be shipped with the gamemode
+    -- under content/materials/noodles/pillarchase2/.
+    local iconNames = {
+        tooSlow = {
+            "noodles/pillarchase2/TooSlow_1.png",
+            "noodles/pillarchase2/TooSlow_2.png"
+        },
+        thorny = {
+            "noodles/pillarchase2/thornygrave_1.png",
+            "noodles/pillarchase2/thornygrave_2.png"
+        }
+    }
+    local icons = {}
+    local iconExists = {}
+
+    for ability, states in pairs(iconNames) do
+        icons[ability] = {}
+        iconExists[ability] = {}
+        for i, name in ipairs(states) do
+            icons[ability][i] = Material(name, "smooth")
+            iconExists[ability][i] = file.Exists("materials/" .. name, "GAME")
+                and not icons[ability][i]:IsError()
+        end
+    end
+
     surface.CreateFont("PC2_EXEAbility", {
-        font = "Trebuchet MS", size = 18, weight = 900
+        font = "Trebuchet MS", size = 17, weight = 900
     })
     surface.CreateFont("PC2_EXEAbilitySmall", {
-        font = "Trebuchet MS", size = 14, weight = 700
+        font = "Trebuchet MS", size = 14, weight = 800
     })
+
+    local abilityCards = {
+        { name = "TOO SLOW", key = "1", icon = "tooSlow",
+            readyTime = "PC2_EXE_TooSlowReady",
+            activeTime = "PC2_EXE_TooSlowUntil" },
+        { name = "THORNY GRAVE", key = "2", icon = "thorny",
+            readyTime = "PC2_EXE_ThornyReady",
+            activeTime = "PC2_EXE_TrapCastingUntil" }
+    }
 
     hook.Add("HUDPaint", "PC2_EXEAbilities", function()
         local ply = LocalPlayer()
-        if not IsValid(ply) then return end
+        if not IsValid(ply) or not ply:Alive() then return end
         local pill = pk_pills.getMappedEnt(ply)
         if not isEXE(pill) then return end
 
-        local y = ScrH() - 94
-        local mid = ScrW() / 2
-        for index, data in ipairs({
-            {label = "TOO SLOW", key = "1 / RMB", time = pill:GetNWFloat("PC2_EXE_TooSlowReady", 0)},
-            {label = "THORNY GRAVE", key = "2 / R", time = pill:GetNWFloat("PC2_EXE_ThornyReady", 0)}
-        }) do
-            local x = mid + (index == 1 and -150 or 10)
-            local left = math.max(0, data.time - CurTime())
-            draw.RoundedBox(8, x, y, 140, 58, Color(12, 7, 12, 215))
-            draw.RoundedBox(4, x + 3, y + 3, 134, 4,
-                left > 0 and Color(126, 31, 40) or Color(201, 60, 84))
-            draw.SimpleText(data.label, "PC2_EXEAbility", x + 70, y + 21,
-                color_white, TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
-            draw.SimpleText(left > 0 and string.format("%.1fs", left) or data.key,
-                "PC2_EXEAbilitySmall", x + 70, y + 43,
-                left > 0 and Color(219, 123, 125) or Color(255, 226, 226),
-                TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+        -- The source HUD places two large ability icons centered at
+        -- the bottom of the screen. Adapt their positions to GMod's HUD.
+        local size = math.Clamp(math.Round(ScrH() * 0.105), 64, 116)
+        local gap = math.Clamp(math.Round(ScrH() * 0.032), 16, 42)
+        local totalWidth = size * 2 + gap
+        local x0 = math.floor((ScrW() - totalWidth) * .5)
+        local y = ScrH() - size - math.Round(ScrH() * 0.040)
+
+        for i, ability in ipairs(abilityCards) do
+            local x = x0 + (i - 1) * (size + gap)
+            local timeLeft = math.max(0, pill:GetNWFloat(ability.readyTime, 0) - CurTime())
+            local activeLeft = math.max(0, pill:GetNWFloat(ability.activeTime, 0) - CurTime())
+            local ready = timeLeft <= 0 and activeLeft <= 0
+            local imageState = ready and 1 or 2
+            local texture = icons[ability.icon][imageState]
+
+            if iconExists[ability.icon][imageState] then
+                surface.SetMaterial(texture)
+                surface.SetDrawColor(255, 255, 255, 255)
+                surface.DrawTexturedRect(x, y, size, size)
+            else
+                -- These files aren't in the current GitHub main tree.
+                -- A readable fallback prevents invisible controls until
+                -- their actual Roblox artwork is added at the paths above.
+                draw.RoundedBox(6, x, y, size, size,
+                    ready and Color(28, 25, 33, 230) or Color(59, 21, 24, 230))
+                surface.SetDrawColor(ready and Color(201, 75, 89)
+                    or Color(106, 32, 43))
+                surface.DrawOutlinedRect(x, y, size, size, 2)
+                draw.SimpleText(ability.name, "PC2_EXEAbilitySmall",
+                    x + size / 2, y + size / 2, color_white,
+                    TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+            end
+
+            draw.SimpleTextOutlined(ability.key, "PC2_EXEAbility",
+                x + 5, y + 6, color_white,
+                TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP, 1, Color(0, 0, 0))
+
+            local status
+            if activeLeft > 0 then
+                status = "ACTIVE"
+            elseif timeLeft > 0 then
+                status = string.format("%.1fs", timeLeft)
+            else
+                status = "READY"
+            end
+            draw.SimpleTextOutlined(status, "PC2_EXEAbilitySmall",
+                x + size / 2, y + size - 7, color_white,
+                TEXT_ALIGN_CENTER, TEXT_ALIGN_BOTTOM, 1, Color(0, 0, 0))
         end
     end)
 
