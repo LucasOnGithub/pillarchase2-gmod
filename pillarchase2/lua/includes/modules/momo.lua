@@ -1,3 +1,0 @@
-AddCSLuaFile()
-
-print("MOMO MODULE DEPRECATED!")
