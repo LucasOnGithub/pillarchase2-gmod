@@ -20,6 +20,7 @@ local ABILITY_COOLDOWN_OFFSET = 0.2
 local TRAP_PLACE_DELAY = (122 / 60) * 0.5371900797
 local TRAP_UNFREEZE_DELAY = 0.2
 local MAX_ACTIVE_TRAPS = 5
+local M1_DAMAGE = 45 -- Pillar Chase 2 EXE standard melee damage
 
 -- Unlike survivor stamina, EXE has NO winded state.
 -- Drain 2 every 0.2 seconds, wait 0.55 seconds after sprinting,
@@ -65,11 +66,10 @@ local function offsetFromBone(puppet, boneInfo, viewAngles, fallback)
         + Vector(0, 0, boneInfo[4])
 end
 
--- The source Nextbot reads these settings from a DIFFERENT addon's ConVars,
--- which are not included in pillarchase_nextbot.zip. The original ConVar
--- names take precedence if present; these fallback defaults are editable.
+-- Too Slow's bite damage still supports the legacy addon setting.
+-- EXE M1 is fixed at 45, regardless of archived/legacy damage ConVars.
 local FALLBACK = {
-    melee = 35, bite = 70
+    bite = 70
 }
 local function getSetting(key, sourceName)
     local source = GetConVar(sourceName)
@@ -79,8 +79,6 @@ local function getSetting(key, sourceName)
 end
 
 if SERVER then
-    CreateConVar("pc2_exe_melee", tostring(FALLBACK.melee), FCVAR_ARCHIVE,
-        "EXE melee damage when _EXEDamage is absent.")
     CreateConVar("pc2_exe_bite", tostring(FALLBACK.bite), FCVAR_ARCHIVE,
         "EXE Too Slow grab damage when _TooSlowDamage is absent.")
     -- Ability buttons and RMB are now handled server-side with
@@ -211,7 +209,7 @@ local function melee(ply, ent)
     -- Pill puppets do not dispatch that DrGBase event; use a timed hit.
     timer.Simple(.45, function()
         if not isEXE(ent) or not IsValid(ply) or not ply:Alive() then return end
-        local amount = getSetting("melee", "_EXEDamage")
+        local amount = M1_DAMAGE
         local victims = getVictims(ply, ent, 105, 0.30)
         for _, victim in ipairs(victims) do
             if victim:Health() <= amount then
