@@ -122,9 +122,10 @@ local function melee(ply, ent)
 
     ent.PC2_EXENextAttack = now + 1.6
     ent.PC2_EXEBusyUntil = now + 0.55 -- original Nextbot melee delay
-    -- AttackPC2 only moves the upper body; layer it over idle/walk/run.
-    -- Do not replace the current locomotion animation or freeze the legs.
-    ent:PillOverlaySequence("attack")
+    -- AttackPC2 uses a private upper-body bone weightlist in EXE.mdl.
+    -- Keep the lower-body animation (idle/walk/run) visible beneath it.
+    -- 74 frames at 60 fps played at 0.8x lasts about 1.54 seconds.
+    ent:PillOverlaySequence("attack", 0.8)
     ent:PillSound("attack")
 
     -- Original Nextbot damages via the model's "Melee" animation event.
@@ -264,6 +265,11 @@ pk_pills.register(ID, {
             idle = "IdlePC2",
             walk = "walk",
             run = "run",
+            -- EXE's exported animation clips have in-place motion.
+            -- Avoid velocity/ground-speed scaling multiplying the puppet's
+            -- global playback rate (and therefore its gesture rate).
+            walk_rate = 1,
+            run_rate = 1,
             attack = "AttackPC2",
             kill = "KillPC2",
             bite = "bite",
