@@ -18,7 +18,6 @@ local HIT_SOUNDS = {
     "Monsters/Hit4.wav"
 }
 local active = {}
-local ZERO = Vector(0, 0, 0)
 
 local function facing(a, b)
     local diff = b - a
@@ -48,24 +47,22 @@ local function makeRagdoll(victim, pos, ang, held)
     rag:SetColor(victim:GetColor())
     rag:Spawn()
     if not IsValid(rag) then return end
+    rag:Activate()
 
+    -- A ragdoll must have MOVABLE physics bones. Freezing every PhysObj
+    -- immediately after spawning leaves it in the model's reference/A pose.
+    -- During the jumpscare it passes through everything, but all of its
+    -- joints still simulate gravity and can hang naturally from the head.
     rag:SetCollisionGroup(held and COLLISION_GROUP_IN_VEHICLE
         or COLLISION_GROUP_DEBRIS)
     rag.PC2EXEVictim = victim
     for i = 0, rag:GetPhysicsObjectCount() - 1 do
         local phys = rag:GetPhysicsObjectNum(i)
         if IsValid(phys) then
-            if held then
-                phys:EnableCollisions(false)
-                phys:EnableMotion(false)
-                phys:EnableGravity(false)
-                phys:SetVelocity(ZERO)
-            else
-                phys:EnableCollisions(true)
-                phys:EnableMotion(true)
-                phys:EnableGravity(true)
-                phys:Wake()
-            end
+            phys:EnableCollisions(not held)
+            phys:EnableMotion(true)
+            phys:EnableGravity(true)
+            phys:Wake()
         end
     end
     return rag
@@ -128,23 +125,39 @@ local function boneWorld(ent, name)
     end
 end
 
--- A ragdoll's PHYSICS head is more dependable than its animation bone
--- cache on the dedicated server, especially while positioning every tick.
-local function ragdollHeadPosition(rag)
+-- Drive only the physics object for the head; the torso/arms/legs are left
+-- to ragdoll constraints and gravity rather than being teleported each tick.
+local function headPhysics(rag)
     if not IsValid(rag) then return end
     local bone = headBone(rag)
     if bone ~= nil and bone >= 0 then
         local physBone = rag:TranslateBoneToPhysBone(bone)
         if physBone ~= nil and physBone >= 0 then
             local phys = rag:GetPhysicsObjectNum(physBone)
-            if IsValid(phys) then return phys:GetPos() end
-        end
-        local pos = rag:GetBonePosition(bone)
-        if isvector(pos) and not pos:IsZero()
-            and pos:DistToSqr(rag:GetPos()) > 0.01 then
-            return pos
+            if IsValid(phys) then return phys end
         end
     end
+
+    -- Workshop ragdolls can lack a dedicated head PhysObj; use the closest
+    -- available physics body as a fallback instead of stopping the kill.
+    local estimatedHead = rag:GetPos() + Vector(0, 0, 65)
+    local nearest, distance
+    for i = 0, rag:GetPhysicsObjectCount() - 1 do
+        local phys = rag:GetPhysicsObjectNum(i)
+        if IsValid(phys) then
+            local squared = phys:GetPos():DistToSqr(estimatedHead)
+            if not distance or squared < distance then
+                nearest, distance = phys, squared
+            end
+        end
+    end
+    return nearest
+end
+
+local function ragdollHeadPosition(rag)
+    if not IsValid(rag) then return end
+    local phys = headPhysics(rag)
+    if IsValid(phys) then return phys:GetPos() end
     return rag:GetPos() + Vector(0, 0, 63)
 end
 
@@ -162,26 +175,33 @@ local function handsPosition(pill, attacker)
     return left or right or fallback
 end
 
--- Translate *every* physical bone so the victim's HEAD follows the
--- midpoint of EXE's animated hands after KillPC2 reaches 0.69 seconds.
+-- Keep the head fixed near the original survivor position before 0.69 s,
+-- then smoothly follow EXE's animated hands. Every other physics bone
+-- stays fully simulated so the body bends and dangles, not A-poses.
 local function holdHead(state)
     local rag = state.held
     if not IsValid(rag) then return end
-    local where = handsPosition(state.pill, state.attacker)
-    if not where then return end
 
-    local headPos = ragdollHeadPosition(rag)
-    local shift = where - headPos
-    if shift:LengthSqr() < 0.0001 then return end
-    for i = 0, rag:GetPhysicsObjectCount() - 1 do
-        local phys = rag:GetPhysicsObjectNum(i)
-        if IsValid(phys) then
-            phys:SetPos(phys:GetPos() + shift, true)
-            phys:SetVelocity(ZERO)
-        end
-    end
-    -- Physics objects drive the ragdoll pose. No server-side SetupBones
-    -- or bone-cache rebuild is required here.
+    local where = state.grabbed
+        and handsPosition(state.pill, state.attacker)
+        or state.initialHeadPos
+    if not isvector(where) then return end
+
+    local head = headPhysics(rag)
+    if not IsValid(head) then return end
+    head:Wake()
+    head:ComputeShadowControl({
+        pos = where,
+        angle = head:GetAngles(), -- allow the head to rotate naturally
+        secondstoarrive = 0.04,
+        maxangular = 1000,
+        maxangulardamp = 1000,
+        maxspeed = 100000,
+        maxspeeddamp = 10000,
+        dampfactor = 0.8,
+        teleportdistance = 150,
+        delta = math.max(FrameTime(), 0.01)
+    })
 end
 
 local function clear(state, keepBody)
@@ -320,6 +340,9 @@ function EXEC.Start(attacker, pill, victim)
     local state = {
         attacker = attacker, pill = pill, victim = victim, held = held,
         started = now, endTime = now + duration,
+        -- Holds the simulated head near the victim until EXE reaches the
+        -- grab moment; otherwise a noncolliding ragdoll falls through floors.
+        initialHeadPos = IsValid(held) and ragdollHeadPosition(held) or nil,
         originalHealth = victim:Health(),
         originalColor = victim:GetColor(),
         originalRenderMode = victim:GetRenderMode()
@@ -423,9 +446,9 @@ hook.Add("Think", "PC2_EXEExecutionUpdate", function()
             if elapsed >= GRAB_AT and not state.grabbed then
                 state.grabbed = true
             end
-            if state.grabbed and not state.killed
-                and now >= (state.nextRagUpdate or 0) then
-                state.nextRagUpdate = now + 0.03
+            -- Update once per server tick: pin only the head, letting
+            -- ragdoll constraints and gravity solve the rest of the body.
+            if not state.killed then
                 holdHead(state)
             end
             if elapsed >= DECAPITATE_AT and not state.killed then
