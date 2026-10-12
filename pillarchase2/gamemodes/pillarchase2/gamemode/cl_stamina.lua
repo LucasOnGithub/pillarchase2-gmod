@@ -1,26 +1,21 @@
--- The local player's zero-stamina breathing sound.
--- Uses the existing 5.73-second WAV in content/sound/Player/Breathing.wav.
--- No breathing sounds are produced for ordinary stamina depletion
--- until the authoritative PC2_Exhausted state becomes true.
+-- Zero-stamina winded breathing, using sound/Player/Breathing.wav.
+-- The 5.7s clip is stopped after exactly 3.25s (or earlier upon death).
+-- Only the local survivor hears this sound; no overlapping replays.
 if SERVER then return end
 
 local SOUND_PATH = "Player/Breathing.wav"
-local BREATH_CLIP_DURATION = 5.73
 local breathing
 local trackedPlayer
-local nextPlayback = 0
 
 local function stopBreathing()
     if breathing then
         breathing:Stop()
         breathing = nil
     end
-    nextPlayback = 0
 end
 
 hook.Add("Think", "PC2_WindedBreathing", function()
     local ply = LocalPlayer()
-
     if ply ~= trackedPlayer then
         stopBreathing()
         trackedPlayer = ply
@@ -33,15 +28,17 @@ hook.Add("Think", "PC2_WindedBreathing", function()
         return
     end
 
-    if not breathing then
-        breathing = CreateSound(ply, SOUND_PATH)
+    -- Client checks the timestamp every frame: the audio stops at the
+    -- 3.25-second deadline even before an NWBool=false packet arrives.
+    local windedEnd = ply:GetNWFloat("PC2_WindedEnd", 0)
+    if windedEnd <= 0 or CurTime() >= windedEnd then
+        stopBreathing()
+        return
     end
 
-    -- The clip repeats without overlapping while the survivor is exhausted.
-    if breathing and RealTime() >= nextPlayback then
-        breathing:Stop()
-        breathing:PlayEx(0.8, 100)
-        nextPlayback = RealTime() + BREATH_CLIP_DURATION
+    if not breathing then
+        breathing = CreateSound(ply, SOUND_PATH)
+        if breathing then breathing:PlayEx(0.8, 100) end
     end
 end)
 

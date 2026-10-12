@@ -1,5 +1,6 @@
 -- Pillar Chase 2 - survivor movement and stamina.
--- 1 Roblox stud = 0.28 m, 1 Source map unit ~= 0.01905 m.
+-- Roblox speed: 8 studs/s walk, 23 studs/s sprint.
+-- Map scale: 1 stud = 0.28m; 1 Source unit ~= 0.01905m.
 local UNITS_PER_STUD = 0.28 / 0.01905
 
 GM.SurvivorWalkStuds = 8
@@ -7,23 +8,24 @@ GM.SurvivorRunStuds = 23
 GM.SurvivorWalkSpeed = GM.SurvivorWalkStuds * UNITS_PER_STUD
 GM.SurvivorRunSpeed = GM.SurvivorRunStuds * UNITS_PER_STUD
 
--- Temporary settings until we have PC2's actual survivor control script.
--- NewStatsWork is the UI script; it doesn't specify drain/recovery speeds.
+-- PC2 Wiki survivor stamina figures supplied by the project author:
+-- -2 / 0.2s sprinting, +4 / 0.2s while resting, winded for 3.25s.
 GM.SurvivorStaminaMax = 100
-GM.SurvivorStaminaDrain = 12.5        -- points/sec (~8 seconds running)
-GM.SurvivorStaminaRegen = 20          -- points/sec
-GM.SurvivorStaminaRegenDelay = 1.25   -- seconds after stopping
-GM.SurvivorStaminaRecovery = 25       -- threshold to recover from exhaustion
+GM.SurvivorStaminaInterval = 0.2
+GM.SurvivorStaminaDrainPerTick = 2
+GM.SurvivorStaminaRegenPerTick = 4
+GM.SurvivorWindedDuration = 3.25
 
--- Before roles exist, every non-monster player is a survivor.
+-- Until roles exist, every player not explicitly marked as a monster
+-- is treated as a survivor. Monsters will get separate movement rules.
 function GM:IsPC2Survivor(ply)
     return IsValid(ply) and ply:IsPlayer()
         and not ply:GetNWBool("PC2_IsMonster", false)
 end
 
 function GM:PlayerSpawn(ply, transition)
+    -- Allow the base player class to set its normal model and loadout.
     self.BaseClass.PlayerSpawn(self, ply, transition)
-
     if not self:IsPC2Survivor(ply) then return end
 
     ply:SetWalkSpeed(self.SurvivorWalkSpeed)
@@ -31,65 +33,93 @@ function GM:PlayerSpawn(ply, transition)
     ply:SetSlowWalkSpeed(self.SurvivorWalkSpeed)
 
     if SERVER then
-        -- New survivor life starts at full stamina.
         ply.PC2Stamina = self.SurvivorStaminaMax
-        ply.PC2Exhausted = false
-        ply.PC2SprintReleased = true
+        ply.PC2Winded = false
+        ply.PC2WindedEnd = 0
+        ply.PC2SprintReleaseRequired = false
         ply.PC2RawSprintHeld = false
-        ply.PC2LastSprintTime = -100
-        ply.PC2NextStaminaSync = 0
+        ply.PC2NextStaminaTick = CurTime() + self.SurvivorStaminaInterval
+
         ply:SetNWFloat("PC2_Stamina", ply.PC2Stamina)
         ply:SetNWFloat("PC2_MaxStamina", self.SurvivorStaminaMax)
+        ply:SetNWFloat("PC2_WindedEnd", 0)
         ply:SetNWBool("PC2_Exhausted", false)
+        ply:SetNWBool("PC2_SprintReleaseRequired", false)
     end
 end
 
--- Input is filtered in both realms for prediction and authoritative control.
+local function sprintBlocked(ply)
+    if SERVER then
+        return ply.PC2Winded == true
+            or ply.PC2SprintReleaseRequired == true
+            or (ply.PC2Stamina ~= nil and ply.PC2Stamina <= 0)
+    end
+
+    return ply:GetNWBool("PC2_Exhausted", false)
+        or ply:GetNWBool("PC2_SprintReleaseRequired", false)
+        or ply:GetNWFloat("PC2_Stamina", 100) <= 0
+end
+
+-- Both client and server filter jump/sprint for correct prediction.
 hook.Add("StartCommand", "PC2_SurvivorMovementInput", function(ply, cmd)
     if not GAMEMODE or not GAMEMODE:IsPC2Survivor(ply) then return end
 
-    cmd:RemoveKey(IN_JUMP)
-
-    -- Remember the unfiltered Shift input server-side. Player:KeyDown()
-    -- would see our stripped button and incorrectly treat it as released.
+    -- Read the *unfiltered* Shift key, before we strip IN_SPEED.
     if SERVER then
-        ply.PC2RawSprintHeld = cmd:KeyDown(IN_SPEED)
+        local shiftHeld = cmd:KeyDown(IN_SPEED)
+        ply.PC2RawSprintHeld = shiftHeld
+
+        -- After winded, require a release of Shift before sprinting
+        -- again, to prevent endlessly running -> 0 -> winded on hold.
+        if ply.PC2SprintReleaseRequired and not shiftHeld then
+            ply.PC2SprintReleaseRequired = false
+            ply:SetNWBool("PC2_SprintReleaseRequired", false)
+        end
     end
 
-    local exhausted = SERVER and ply.PC2Exhausted
-        or (CLIENT and ply:GetNWBool("PC2_Exhausted", false))
-    if exhausted then
+    cmd:RemoveKey(IN_JUMP)
+    if sprintBlocked(ply) then
         cmd:RemoveKey(IN_SPEED)
     end
 end)
 
--- The speed cap also applies while the exhaustion flag is catching up
--- over the network, so holding Shift cannot bypass a zero-stamina lock.
 hook.Add("SetupMove", "PC2_SurvivorExhaustionSpeed", function(ply, mv, cmd)
     if not GAMEMODE or not GAMEMODE:IsPC2Survivor(ply) then return end
+    if not sprintBlocked(ply) then return end
 
-    local exhausted = SERVER and ply.PC2Exhausted
-        or (CLIENT and ply:GetNWBool("PC2_Exhausted", false))
-    if not exhausted then return end
-
-    local limit = GAMEMODE.SurvivorWalkSpeed
-    if mv:GetMaxSpeed() > limit then
-        mv:SetMaxSpeed(limit)
-    end
-    if mv:GetMaxClientSpeed() > limit then
-        mv:SetMaxClientSpeed(limit)
-    end
+    -- Prevent any client input from bypassing forced-walk speed.
+    local speed = GAMEMODE.SurvivorWalkSpeed
+    if mv:GetMaxSpeed() > speed then mv:SetMaxSpeed(speed) end
+    if mv:GetMaxClientSpeed() > speed then mv:SetMaxClientSpeed(speed) end
 end)
 
 if SERVER then
-    local previousTick = CurTime()
+    local function startWinded(ply, time)
+        ply.PC2Stamina = 0
+        ply.PC2Winded = true
+        ply.PC2WindedEnd = time + GAMEMODE.SurvivorWindedDuration
+        ply.PC2SprintReleaseRequired = true
+
+        -- Replicate before/with winded state, so clients can stop
+        -- the breathing audio locally at the exact end timestamp.
+        ply:SetNWFloat("PC2_Stamina", 0)
+        ply:SetNWFloat("PC2_WindedEnd", ply.PC2WindedEnd)
+        ply:SetNWBool("PC2_SprintReleaseRequired", true)
+        ply:SetNWBool("PC2_Exhausted", true)
+    end
+
+    local function endWinded(ply, time)
+        ply.PC2Winded = false
+        ply.PC2WindedEnd = 0
+        -- Keep stamina at zero through the entire winded period.
+        -- First +4 regen tick occurs 0.2s AFTER winded ends.
+        ply.PC2NextStaminaTick = time + GAMEMODE.SurvivorStaminaInterval
+        ply:SetNWBool("PC2_Exhausted", false)
+        ply:SetNWFloat("PC2_WindedEnd", 0)
+    end
 
     hook.Add("Think", "PC2_ServerSurvivorStamina", function()
-        local now = CurTime()
-        local dt = math.Clamp(now - previousTick, 0, 0.1)
-        previousTick = now
-        if dt <= 0 then return end
-
+        local time = CurTime()
         local gm = GAMEMODE
         if not gm then return end
 
@@ -97,55 +127,55 @@ if SERVER then
             if not gm:IsPC2Survivor(ply) or not ply:Alive() then continue end
             if ply.PC2Stamina == nil then continue end
 
-            local maxStamina = gm.SurvivorStaminaMax
-            local oldStamina = math.Clamp(ply.PC2Stamina, 0, maxStamina)
-            local stamina = oldStamina
-            local exhausted = ply.PC2Exhausted == true
-            local shiftHeld = ply.PC2RawSprintHeld == true
-
-            if not shiftHeld then
-                ply.PC2SprintReleased = true
-            end
-
-            local moving = ply:GetVelocity():Length2DSqr() > 100
-            local sprinting = not exhausted and stamina > 0 and shiftHeld and moving
-                and ply:OnGround() and not ply:Crouching()
-                and ply:GetMoveType() == MOVETYPE_WALK
-
-            if sprinting then
-                stamina = math.max(0, stamina - gm.SurvivorStaminaDrain * dt)
-                ply.PC2LastSprintTime = now
-
-                if stamina <= 0 then
-                    exhausted = true
-                    ply.PC2SprintReleased = false
+            if ply.PC2Winded then
+                if time >= ply.PC2WindedEnd then
+                    endWinded(ply, time)
                 end
-            elseif now - (ply.PC2LastSprintTime or -100) >= gm.SurvivorStaminaRegenDelay then
-                stamina = math.min(maxStamina, stamina + gm.SurvivorStaminaRegen * dt)
+                -- No draining or regenerating for the full 3.25s.
+                continue
+            end
 
-                -- Recover enough stamina AND release Shift once after
-                -- exhaustion, preventing automatic sprint/winded cycling.
-                if exhausted and stamina >= gm.SurvivorStaminaRecovery
-                    and ply.PC2SprintReleased then
-                    exhausted = false
+            local nextTick = ply.PC2NextStaminaTick or (time + gm.SurvivorStaminaInterval)
+            -- Fixed 0.2-second increments match PC2's -2 / +4 figures.
+            -- Cap catch-up after server stalls rather than doing unlimited work.
+            local steps = 0
+            while time >= nextTick and steps < 10 do
+                steps = steps + 1
+                nextTick = nextTick + gm.SurvivorStaminaInterval
+
+                local stamina = math.Clamp(ply.PC2Stamina, 0, gm.SurvivorStaminaMax)
+                local moving = ply:GetVelocity():Length2DSqr() > 100
+                local sprinting = not ply.PC2SprintReleaseRequired
+                    and stamina > 0 and ply.PC2RawSprintHeld == true
+                    and moving and ply:OnGround() and not ply:Crouching()
+                    and ply:GetMoveType() == MOVETYPE_WALK
+
+                if sprinting then
+                    stamina = math.max(0, stamina - gm.SurvivorStaminaDrainPerTick)
+                else
+                    stamina = math.min(gm.SurvivorStaminaMax,
+                        stamina + gm.SurvivorStaminaRegenPerTick)
                 end
-            end
 
-            ply.PC2Stamina = stamina
-            local changedExhaustion = ply.PC2Exhausted ~= exhausted
-            if changedExhaustion then
-                ply.PC2Exhausted = exhausted
-                ply:SetNWBool("PC2_Exhausted", exhausted)
-                ply.PC2NextStaminaSync = 0
-            end
+                ply.PC2Stamina = stamina
 
-            -- Server owns stamina. Replicate at most 10 times/second,
-            -- with immediate updates when exhaustion starts/ends.
-            if now >= (ply.PC2NextStaminaSync or 0) then
-                if math.abs(ply:GetNWFloat("PC2_Stamina", maxStamina) - stamina) > 0.001 then
+                if stamina <= 0 and sprinting then
+                    startWinded(ply, time)
+                    break
+                end
+
+                -- The HUD reads the authoritative server value.
+                if math.abs(ply:GetNWFloat("PC2_Stamina", -1) - stamina) > 0.001 then
                     ply:SetNWFloat("PC2_Stamina", stamina)
                 end
-                ply.PC2NextStaminaSync = now + 0.1
+            end
+
+            if ply.PC2Winded then
+                ply.PC2NextStaminaTick = time + gm.SurvivorStaminaInterval
+            elseif steps >= 10 and time >= nextTick then
+                ply.PC2NextStaminaTick = time + gm.SurvivorStaminaInterval
+            else
+                ply.PC2NextStaminaTick = nextTick
             end
         end
     end)
