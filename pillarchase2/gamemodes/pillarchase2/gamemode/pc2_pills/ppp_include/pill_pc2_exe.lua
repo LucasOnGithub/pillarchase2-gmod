@@ -289,8 +289,10 @@ pk_pills.register(ID, {
             return "charge"
         end
     end,
+    -- Walking, running and charging use the EXE model's 5004 animation
+    -- events, not generic PlayerFootstep timing or the old step sample.
+    muteSteps = true,
     sounds = {
-        step = "noodles/pillarchase2/exe/exestep.wav",
         attack = "noodles/pillarchase2/exe/exeattack.wav",
         sniff = "noodles/pillarchase2/exe/exesniff.wav",
         grab = "noodles/pillarchase2/exe/exegrab.wav",
