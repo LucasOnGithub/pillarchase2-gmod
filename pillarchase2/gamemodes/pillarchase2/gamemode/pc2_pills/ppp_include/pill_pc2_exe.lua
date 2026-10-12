@@ -62,7 +62,8 @@ if SERVER then
         "EXE Too Slow cooldown when _TooSlowCooldown is absent.")
     CreateConVar("pc2_exe_thornyCooldown", tostring(FALLBACK.thornyCooldown), FCVAR_ARCHIVE,
         "EXE Thorny Grave cooldown when _ThornyGraveCooldown is absent.")
-    util.AddNetworkString("pc2_exe_ability")
+    -- Ability buttons and RMB are now handled server-side with
+    -- PlayerButtonDown / KeyPress, like the Bendy Redrawn pill.
 end
 
 local function isEXE(ent)
@@ -290,6 +291,7 @@ pk_pills.register(ID, {
     boneCameraEnabled = true,
     firstPersonBody = true,
     firstPersonHideHead = true,
+    rotateWhenIdle = true,
     -- Bone entry format from the supplied code:
     -- { bone name, forward, right, vertical } (Source units).
     -- EXE has UpperTorso rather than a bone literally named "Spine".
@@ -357,6 +359,7 @@ pk_pills.register(ID, {
             ent:SetNWFloat("PC2_EXE_ThornyReady", 0)
             ent:SetNWFloat("PC2_EXE_TrapCastingUntil", 0)
             ent:SetNWFloat("PC2_EXE_SniffUntil", 0)
+            ent:SetNWBool("PC2_EXE_FirstPerson", true)
         end
     end,
     -- LMB is EXE's regular melee attack, not an ability hotkey.
@@ -374,8 +377,9 @@ pk_pills.register(ID, {
         if not ent.formTable or not ent.formTable.boneCameraEnabled then return end
 
         local puppet = ent:GetPuppet()
-        local firstPerson = GetConVar("pc2_exe_firstperson")
-            and GetConVar("pc2_exe_firstperson"):GetBool()
+        -- KeyPress(IN_ATTACK2) on the SERVER owns this state; reading an
+        -- NWBool works in singleplayer even when client key hooks don't.
+        local firstPerson = ent:GetNWBool("PC2_EXE_FirstPerson", true)
 
         if firstPerson then
             -- Head bone location is evaluated every frame, so it follows
@@ -455,49 +459,37 @@ if SERVER then
         end
     end)
 
-    net.Receive("pc2_exe_ability", function(_, ply)
-        local selected = net.ReadUInt(2)
+    -- Match Bendy Redrawn's server-side number-key ability dispatch.
+    -- PlayerButtonDown receives KEY_1/KEY_2; unlike input.WasKeyPressed
+    -- on the client, this works in GMod singleplayer.
+    hook.Add("PlayerButtonDown", "PC2_EXE_NumberAbilities", function(ply, button)
+        if button ~= KEY_1 and button ~= KEY_2 then return end
+        if not IsValid(ply) or not ply:Alive() then return end
         local pill = pk_pills.getMappedEnt(ply)
-        if not isEXE(pill) or not ply:Alive() then return end
-        if selected == 1 then tooSlow(ply, pill) end
-        if selected == 2 then thornyGrave(ply, pill) end
+        if not isEXE(pill) then return end
+
+        if button == KEY_1 then
+            tooSlow(ply, pill)
+        elseif button == KEY_2 then
+            thornyGrave(ply, pill)
+        end
+    end)
+
+    -- RMB (+attack2) is an IN_* button, so use the corresponding KeyPress
+    -- hook rather than client polling. Its state is networked to the owner.
+    -- The EXE pill has no 'attack2' field, so RMB won't fire an ability.
+    hook.Add("KeyPress", "PC2_EXE_SwitchCamera", function(ply, key)
+        if key ~= IN_ATTACK2 or not IsValid(ply) or not ply:Alive() then return end
+        local pill = pk_pills.getMappedEnt(ply)
+        if not isEXE(pill) then return end
+        -- Avoid a second toggle from re-prediction within the same press.
+        local now = CurTime()
+        if now < (pill.PC2_EXENextCameraToggle or 0) then return end
+        pill.PC2_EXENextCameraToggle = now + 0.20
+        pill:SetNWBool("PC2_EXE_FirstPerson",
+            not pill:GetNWBool("PC2_EXE_FirstPerson", true))
     end)
 else
-    local view = CreateClientConVar("pc2_exe_firstperson", "1", true, false,
-        "EXE view: 1 = head-bone first person, 0 = spine-bone third person.")
-    local lastEXEPill
-    hook.Add("Think", "PC2_EXEKeys", function()
-        local ply = LocalPlayer()
-        if not IsValid(ply) then return end
-        local pill = pk_pills.getMappedEnt(ply)
-
-        -- The old third-person setting may be archived from previous builds.
-        -- Newly applied EXE pills always start from the head-bone view.
-        if not isEXE(pill) then
-            lastEXEPill = nil
-            return
-        end
-        if lastEXEPill ~= pill then
-            lastEXEPill = pill
-            RunConsoleCommand("pc2_exe_firstperson", "1")
-            return
-        end
-
-        if gui.IsGameUIVisible() or vgui.GetKeyboardFocus() then return end
-        if input.WasKeyPressed(KEY_1) then
-            net.Start("pc2_exe_ability")
-            net.WriteUInt(1, 2)
-            net.SendToServer()
-        elseif input.WasKeyPressed(KEY_2) then
-            net.Start("pc2_exe_ability")
-            net.WriteUInt(2, 2)
-            net.SendToServer()
-        elseif input.WasMousePressed(MOUSE_RIGHT) then
-            -- RMB now switches camera; it is NOT bound to an ability.
-            RunConsoleCommand("pc2_exe_firstperson", view:GetBool() and "0" or "1")
-        end
-    end)
-
 
     -- The original DrGBase EXE HUD uses these four artwork names.
     -- Ready and cooling-down each have their own image, unlike the

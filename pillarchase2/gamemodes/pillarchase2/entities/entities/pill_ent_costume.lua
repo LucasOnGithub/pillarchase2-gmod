@@ -704,8 +704,7 @@ function ENT:Think()
         -- camera is at the front of the head. Arms, torso and legs stay
         -- rendered. Restore the head whenever third-person is selected.
         if localPlayer and self.formTable.firstPersonHideHead then
-            local cv = GetConVar("pc2_exe_firstperson")
-            local hideHead = cv and cv:GetBool() or false
+            local hideHead = self:GetNWBool("PC2_EXE_FirstPerson", true)
             local bone = puppet:LookupBone("Head")
             if bone and self.PC2HeadIsHidden ~= hideHead then
                 puppet:ManipulateBoneScale(bone, hideHead
@@ -729,15 +728,20 @@ function ENT:Think()
         puppet:SetRenderOrigin(ply:GetPos())
     end
 
-    if vel > 0 or math.abs(math.AngleDifference(puppet:GetAngles().y, ply:EyeAngles().y)) > 350 then
-        local angs = ply:EyeAngles()
-        angs.p = 0
+    -- The previous comparison against >350 could NEVER be true:
+    -- math.AngleDifference is always within -180 to +180 degrees.
+    -- EXE must follow aim yaw even while completely stationary. Other
+    -- pill forms keep their previous idle facing if desired.
+    local rotateWhenIdle = self.formTable.rotateWhenIdle
+    if rotateWhenIdle or vel > 0 then
+        local angles = ply:EyeAngles()
+        angles.p = 0
+        angles.r = 0
 
         if SERVER then
-            puppet:SetAngles(angs)
+            puppet:SetAngles(angles)
         else
-            --puppet:SetAngles(angs)
-            puppet:SetRenderAngles(angs)
+            puppet:SetRenderAngles(angles)
         end
     end
 
