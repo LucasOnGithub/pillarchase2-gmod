@@ -237,6 +237,8 @@ local function tooSlow(ply, ent)
     ent:SetNWFloat("PC2_EXE_RecoveryUntil", 0)
     ent:SetNWFloat("PC2_EXE_TooSlowUntil", ent.PC2_EXETooSlowUntil)
     ent:SetNWFloat("PC2_EXE_TooSlowReady", ent.PC2_EXENextTooSlow)
+    ply:SetNWFloat("PC2_EXE_TooSlowUntil", ent.PC2_EXETooSlowUntil)
+    ply:SetNWFloat("PC2_EXE_TooSlowReady", ent.PC2_EXENextTooSlow)
     ent:PillSound("tooslow")
 end
 
@@ -253,6 +255,8 @@ local function thornyGrave(ply, ent)
     ent.PC2_EXEBusyUntil = now + 122 / 60
     ent:SetNWFloat("PC2_EXE_ThornyReady", ent.PC2_EXENextThorny)
     ent:SetNWFloat("PC2_EXE_TrapCastingUntil", ent.PC2_EXEBusyUntil)
+    ply:SetNWFloat("PC2_EXE_ThornyReady", ent.PC2_EXENextThorny)
+    ply:SetNWFloat("PC2_EXE_TrapCastingUntil", ent.PC2_EXEBusyUntil)
     ent:PillSound("deploy")
     animate(ent, "trap")
 
@@ -309,6 +313,7 @@ local function tickTooSlow(ply, ent, now)
         -- events fire at cycles ~0.531 and ~0.612 respectively.
         ent.PC2_EXEBusyUntil = now + 210 / 60 * 0.6125
         ent:SetNWFloat("PC2_EXE_TooSlowUntil", 0)
+        ply:SetNWFloat("PC2_EXE_TooSlowUntil", 0)
         ent:PillSound("grab")
         animate(ent, "bite")
         if victim:IsPlayer() then victim:Freeze(true) end
@@ -429,6 +434,13 @@ pk_pills.register(ID, {
             ent:SetNWFloat("PC2_EXE_ThornyReady", 0)
             ent:SetNWFloat("PC2_EXE_TrapCastingUntil", 0)
             ent:SetNWFloat("PC2_EXE_SniffUntil", 0)
+            for _, key in ipairs({
+                "PC2_EXE_TooSlowUntil", "PC2_EXE_TooSlowReady",
+                "PC2_EXE_ThornyReady", "PC2_EXE_TrapCastingUntil",
+                "PC2_EXE_SniffUntil"
+            }) do
+                ply:SetNWFloat(key, 0)
+            end
             ent:SetNWBool("PC2_EXE_FirstPerson", true)
         end
     end,
@@ -634,6 +646,7 @@ if SERVER then
                     ent.PC2_EXETooSlowUntil = 0
                     ent.PC2_EXERecoveryUntil = chargeUntil + CHARGE_RECOVERY
                     ent:SetNWFloat("PC2_EXE_TooSlowUntil", 0)
+                    ply:SetNWFloat("PC2_EXE_TooSlowUntil", 0)
                     ent:SetNWFloat("PC2_EXE_RecoveryUntil", ent.PC2_EXERecoveryUntil)
                 end
 
@@ -668,6 +681,7 @@ if SERVER then
                 if now >= (ent.PC2_EXESniffStart or 0) then
                     ent.PC2_EXESniffStart = now + 12
                     ent:SetNWFloat("PC2_EXE_SniffUntil", now + 2)
+                    ply:SetNWFloat("PC2_EXE_SniffUntil", now + 2)
                     ent:PillSound("sniff")
                 end
             elseif ply:GetNWString("PC2_MonsterForm", "") == ID
@@ -677,6 +691,13 @@ if SERVER then
                     ply:SetNWString("PC2_MonsterForm", "")
                     ply:SetNWEntity("PC2_ActiveMonsterPill", NULL)
                     ply:SetNWInt("PC2_EXE_TrapCount", 0)
+                    for _, key in ipairs({
+                        "PC2_EXE_TooSlowUntil", "PC2_EXE_TooSlowReady",
+                        "PC2_EXE_ThornyReady", "PC2_EXE_TrapCastingUntil",
+                        "PC2_EXE_SniffUntil"
+                    }) do
+                        ply:SetNWFloat(key, 0)
+                    end
                 end
                 if not isEXE(ent) then
                     ply:SetNWBool("PC2_IsMonster", false)
@@ -765,11 +786,37 @@ else
             activeTime = "PC2_EXE_TrapCastingUntil" }
     }
 
+    -- The pill entity can arrive after the player's replicated monster role.
+    -- Never require the client-local pk_pill_ent mapping for ability UI.
+    local function clientEXEPill(ply)
+        local networked = ply:GetNWEntity("PC2_ActiveMonsterPill")
+        if isEXE(networked) then return networked end
+        if pk_pills and pk_pills.getMappedEnt then
+            local mapped = pk_pills.getMappedEnt(ply)
+            if isEXE(mapped) then return mapped end
+        end
+    end
+
+    local function isEXEHUDOwner(ply, pill)
+        return isEXE(pill) or (
+            ply:GetNWBool("PC2_IsMonster", false)
+            and ply:GetNWString("PC2_MonsterForm", "") == ID
+        )
+    end
+
+    local function hudFloat(ply, pill, key)
+        local replicated = ply:GetNWFloat(key, 0)
+        if isEXE(pill) then
+            return pill:GetNWFloat(key, replicated)
+        end
+        return replicated
+    end
+
     hook.Add("HUDPaint", "PC2_EXEAbilities", function()
         local ply = LocalPlayer()
         if not IsValid(ply) or not ply:Alive() then return end
-        local pill = pk_pills.getMappedEnt(ply)
-        if not isEXE(pill) then return end
+        local pill = clientEXEPill(ply)
+        if not isEXEHUDOwner(ply, pill) then return end
 
         -- The source HUD places two large ability icons centered at
         -- the bottom of the screen. Adapt their positions to GMod's HUD.
@@ -781,10 +828,13 @@ else
 
         for i, ability in ipairs(abilityCards) do
             local x = x0 + (i - 1) * (size + gap)
-            local timeLeft = math.max(0, pill:GetNWFloat(ability.readyTime, 0) - CurTime())
-            local activeLeft = math.max(0, pill:GetNWFloat(ability.activeTime, 0) - CurTime())
-            local fullTraps = ability.icon == "thorny" and
-                pill:GetNWInt("PC2_EXE_TrapCount", 0) >= MAX_ACTIVE_TRAPS
+            local timeLeft = math.max(0, hudFloat(ply, pill, ability.readyTime) - CurTime())
+            local activeLeft = math.max(0, hudFloat(ply, pill, ability.activeTime) - CurTime())
+            local trapCount = isEXE(pill)
+                and pill:GetNWInt("PC2_EXE_TrapCount", ply:GetNWInt("PC2_EXE_TrapCount", 0))
+                or ply:GetNWInt("PC2_EXE_TrapCount", 0)
+            local fullTraps = ability.icon == "thorny"
+                and trapCount >= MAX_ACTIVE_TRAPS
             local ready = timeLeft <= 0 and activeLeft <= 0 and not fullTraps
             local imageState = ready and 1 or 2
             local texture = icons[ability.icon][imageState]
@@ -822,8 +872,7 @@ else
             end
 
             if ability.icon == "thorny" then
-                local count = pill:GetNWInt("PC2_EXE_TrapCount", 0)
-                draw.SimpleTextOutlined(string.format("%d/%d", count, MAX_ACTIVE_TRAPS),
+                draw.SimpleTextOutlined(string.format("%d/%d", trapCount, MAX_ACTIVE_TRAPS),
                     "PC2_EXEAbilitySmall",
                     x + size / 2, y + size - 6,
                     color_white, TEXT_ALIGN_CENTER, TEXT_ALIGN_BOTTOM,
@@ -835,8 +884,9 @@ else
     hook.Add("PreDrawHalos", "PC2_EXESniffHalo", function()
         local ply = LocalPlayer()
         if not IsValid(ply) then return end
-        local pill = pk_pills.getMappedEnt(ply)
-        if not isEXE(pill) or CurTime() >= pill:GetNWFloat("PC2_EXE_SniffUntil", 0) then
+        local pill = clientEXEPill(ply)
+        if not isEXEHUDOwner(ply, pill)
+            or CurTime() >= hudFloat(ply, pill, "PC2_EXE_SniffUntil") then
             return
         end
         local marked = {}
