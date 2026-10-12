@@ -38,6 +38,11 @@ hook.Add("CalcView", "momo_calcview", function(ply, pos, ang, fov, nearZ, farZ)
     local ent = pk_pills.getMappedEnt(LocalPlayer())
 
     if IsValid(ent) and ply:GetViewEntity() == ply then
+        -- Optional form-specific camera. Normal pills keep their existing camera.
+        if ent.formTable and ent.formTable.calcView then
+            local custom = ent.formTable.calcView(ply, ent, pos, ang, fov)
+            if custom then return custom end
+        end
         local startpos
 
         if ent.formTable.type == "phys" then

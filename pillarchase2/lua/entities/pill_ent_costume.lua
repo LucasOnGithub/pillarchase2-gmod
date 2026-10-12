@@ -393,7 +393,9 @@ function ENT:Think()
 
         --if true then
         if self.formTable.movePoseMode ~= "xy" and self.formTable.movePoseMode ~= "xy-bot" and not overrideRate then
-            local rate = overrideRate or vel / seq_vel
+            -- Retargeted/in-place SMD run clips commonly have no root-motion
+            -- ground speed. Dividing by zero made them play at 12x speed.
+            local rate = overrideRate or (seq_vel > 0 and vel / seq_vel or 1)
 
             --goofy limitation (floods console with errors if above 12!)
             if rate > 12 then
@@ -658,7 +660,11 @@ function ENT:Think()
             end
         end
     else
-        if self:GetPillUser() ~= LocalPlayer() or pk_pills.convars.cl_thirdperson:GetBool() then
+        -- Some PC2 forms have two possession camera modes. A local
+        -- first-person camera hides the puppet; other forms are unchanged.
+        if ply == LocalPlayer() and self.formTable.hidePuppetForFirstPerson then
+            puppet:SetNoDraw(self.formTable.hidePuppetForFirstPerson(ply, self))
+        elseif self:GetPillUser() ~= LocalPlayer() or pk_pills.convars.cl_thirdperson:GetBool() then
             puppet:SetNoDraw(false)
         else
             puppet:SetNoDraw(true)
