@@ -4,5 +4,6 @@ AddCSLuaFile("shared.lua")
 AddCSLuaFile("sh_survivor_movement.lua")
 AddCSLuaFile("cl_timer.lua")
 AddCSLuaFile("cl_survivor_hud.lua")
+AddCSLuaFile("cl_stamina.lua")
 
 include("shared.lua")

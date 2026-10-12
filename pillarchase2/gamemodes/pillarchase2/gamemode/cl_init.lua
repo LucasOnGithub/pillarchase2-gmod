@@ -2,3 +2,4 @@
 include("shared.lua")
 include("cl_timer.lua")
 include("cl_survivor_hud.lua")
+include("cl_stamina.lua")
