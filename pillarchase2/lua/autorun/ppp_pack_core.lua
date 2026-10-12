@@ -43,7 +43,3 @@ include("ppp_include/pill_360_noscope.lua")
 pk_pills.packStart("Jake","jake","icon16/box.png")
 
 include("ppp_include/pill_jake.lua")
-
--- First playable Pillar Chase 2 monster. Uses the bundled pk_pills base.
-pk_pills.packStart("Pillar Chase 2", "pc2", "icon16/user.png")
-include("ppp_include/pill_pc2_exe.lua")
