@@ -171,7 +171,9 @@ function ENT:Initialize()
             end
         end
 
-        local puppet = ents.Create("pill_puppet")
+        -- Only EXE uses an anim-type puppet, because GMod's overlay
+        -- gestures aren't supported on the legacy ai-type pill_puppet.
+        local puppet = ents.Create(self.formTable.puppetClass or "pill_puppet")
         puppet:SetModel(model or "models/Humans/corpse1.mdl")
 
         if skin then
@@ -679,6 +681,10 @@ function ENT:Think()
                 self.wepmdl:Remove()
             end
         end
+
+        -- Overlay maintenance runs after the base locomotion sequence
+        -- has been selected, to survive idle/walk/run transitions.
+        self:PillOverlayThink()
     else
         -- Hide EXE's puppet in the close possession camera to avoid
         -- looking through its head. Do not affect other pills.
@@ -826,28 +832,84 @@ if SERVER then
         self.tickAnim = name
     end
 
-    -- One-shot layer over the puppet's current locomotion animation.
-    -- EXE's AttackPC2 contains upper-body animation only.
-    function ENT:PillOverlaySequence(name, playbackRate)
+    -- AttackPC2 is an upper-body layer. The normal pill_puppet is
+    -- an AI entity, not a BaseAnimatingOverlay; EXE uses an anim-type
+    -- puppet so this layer is supported and replicated automatically.
+    function ENT:PillOverlaySequence(name)
         local puppet = self:GetPuppet()
         local anims = self.formTable and self.formTable.anims
             and self.formTable.anims.default
         local sequenceName = anims and anims[name]
-        if not IsValid(puppet) or not sequenceName then return false end
-
-        local sequence = puppet:LookupSequence(sequenceName)
-        if not sequence or sequence < 0 then return false end
-        if not puppet.AddGestureSequence then return false end
-
-        local layer = puppet:AddGestureSequence(sequence, true)
-        if not layer or layer < 0 then return false end
-        if puppet.IsValidLayer and not puppet:IsValidLayer(layer) then
+        if not IsValid(puppet) or not sequenceName or not puppet.AddGestureSequence then
             return false
         end
 
+        local seq = puppet:LookupSequence(sequenceName)
+        if not seq or seq < 0 then return false end
+
+        local duration = puppet:SequenceDuration(seq)
+        if not duration or duration <= 0 then return false end
+
+        -- Remove the previous layer if an ability interrupts an attack.
+        if self.PC2ActiveOverlay then
+            local old = self.PC2ActiveOverlay.layer
+            if old and puppet:IsValidLayer(old) then puppet:RemoveLayer(old) end
+            self.PC2ActiveOverlay = nil
+        end
+
+        -- Do not autokill the gesture; GMod otherwise sometimes removes
+        -- it early after a locomotion ResetSequence or layer-cycle jump.
+        local layer = puppet:AddGestureSequence(seq, false)
+        if not layer or layer < 0 or not puppet:IsValidLayer(layer) then
+            return false
+        end
+        puppet:SetLayerLooping(layer, false)
+        puppet:SetLayerPlaybackRate(layer, 1) -- original model FPS
         puppet:SetLayerWeight(layer, 1)
-        puppet:SetLayerPlaybackRate(layer, playbackRate or 1)
+        puppet:SetLayerCycle(layer, 0)
+
+        self.PC2ActiveOverlay = {
+            sequence = seq,
+            layer = layer,
+            started = CurTime(),
+            duration = duration
+        }
         return true
+    end
+
+    -- Keep EXE's attack playing for its complete native sequence duration,
+    -- even if walking/running switches the puppet's base animation.
+    function ENT:PillOverlayThink()
+        local playback = self.PC2ActiveOverlay
+        if not playback then return end
+
+        local puppet = self:GetPuppet()
+        if not IsValid(puppet) then
+            self.PC2ActiveOverlay = nil
+            return
+        end
+
+        local elapsed = CurTime() - playback.started
+        if elapsed >= playback.duration then
+            if playback.layer and puppet:IsValidLayer(playback.layer) then
+                puppet:RemoveLayer(playback.layer)
+            end
+            self.PC2ActiveOverlay = nil
+            return
+        end
+
+        if not playback.layer or not puppet:IsValidLayer(playback.layer) then
+            -- Recover from an unexpectedly dropped overlay at the correct
+            -- point in the attack, rather than restarting or cutting out.
+            local layer = puppet:AddGestureSequence(playback.sequence, false)
+            if not layer or layer < 0 or not puppet:IsValidLayer(layer) then return end
+
+            puppet:SetLayerLooping(layer, false)
+            puppet:SetLayerPlaybackRate(layer, 1)
+            puppet:SetLayerWeight(layer, 1)
+            puppet:SetLayerCycle(layer, math.Clamp(elapsed / playback.duration, 0, 0.99))
+            playback.layer = layer
+        end
     end
 
     function ENT:PillGesture(name)

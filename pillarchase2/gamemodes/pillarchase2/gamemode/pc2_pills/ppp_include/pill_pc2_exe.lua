@@ -124,8 +124,8 @@ local function melee(ply, ent)
     ent.PC2_EXEBusyUntil = now + 0.55 -- original Nextbot melee delay
     -- AttackPC2 uses a private upper-body bone weightlist in EXE.mdl.
     -- Keep the lower-body animation (idle/walk/run) visible beneath it.
-    -- 74 frames at 60 fps played at 0.8x lasts about 1.54 seconds.
-    ent:PillOverlaySequence("attack", 0.8)
+    -- Native 60 FPS / 74-frame timing; no speed multiplier or early autokill.
+    ent:PillOverlaySequence("attack")
     ent:PillSound("attack")
 
     -- Original Nextbot damages via the model's "Melee" animation event.
@@ -236,6 +236,8 @@ pk_pills.register(ID, {
     side = "pc2_monster",
     type = "ply",
     model = MODEL,
+    -- Gesture layers require an anim-type puppet (BaseAnimatingOverlay).
+    puppetClass = "pc2_exe_puppet",
     health = 1000,
     hull = Vector(30, 30, 90),
     duckBy = 0,
