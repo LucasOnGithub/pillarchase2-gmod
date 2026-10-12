@@ -1,216 +1,300 @@
--- EXE monster HUD, adapted to the PC2 NewStats-style artwork.
--- The screenshot shows a character portrait, player name, amber
--- circular stamina meter, purple statistic circle and a low health bar.
--- All displayed health/stamina/trap numbers are REAL networked values;
--- no fabricated XP, level, or kill statistics are shown.
+-- EXE monster HUD using the survivor NewStats artwork, meters and XP bar.
+-- The 3D survivor preview is replaced with EXE's imported portrait.
+-- Existing gameplay values:
+--    player:SetNWFloat("PC2_Stamina", value)
+--    player:SetNWFloat("PC2_MaxStamina", value)
+--    player:SetNWInt("PC2_Earnings", value)
+--    player:SetNWInt("PC2_EarningsMax", value)
+--    monster:SetNWBool("PC2_IsMonster", true)  -- heartbeat proximity source
+-- Health uses player:Health() / player:GetMaxHealth().
 if SERVER then return end
 
-local splash = Material("Server/RoundHandler/GameGui/NewStats/SelfIcon.png", "smooth")
-local assetDir = "Server/RoundHandler/GameGui/NewStats/SelfIcon/ViewportFrame/NewStatsWork/Stuff/"
-local staminaArt = {
-    Material(assetDir .. "Stamina1.png", "smooth"),
-    Material(assetDir .. "Stamina2.png", "smooth"),
-    Material(assetDir .. "Stamina3.png", "smooth")
+local PATH = "Server/RoundHandler/GameGui/NewStats/SelfIcon/"
+local STUFF = PATH .. "ViewportFrame/NewStatsWork/Stuff/"
+
+local art = {
+    splash   = Material("Server/RoundHandler/GameGui/NewStats/SelfIcon.png", "smooth"),
+    exe      = Material(PATH .. "Renders/EXE.png", "smooth"),
+    ring     = Material(PATH .. "Heart.png", "smooth"),
+    currency = Material(PATH .. "Earning.png", "smooth"),
+    heart = {
+        Material(STUFF .. "Heart1.png", "smooth"),
+        Material(STUFF .. "Heart2.png", "smooth"),
+        Material(STUFF .. "Heart3.png", "smooth")
+    },
+    stamina = {
+        Material(STUFF .. "Stamina1.png", "smooth"),
+        Material(STUFF .. "Stamina2.png", "smooth"),
+        Material(STUFF .. "Stamina3.png", "smooth")
+    },
+    shock = Material(STUFF .. "HeartShockwave.png", "smooth")
 }
-local trapArt = Material("Server/RoundHandler/GameGui/NewStats/SelfIcon/Heart.png", "smooth")
--- The real imported EXE portrait, added to main while this change was in progress.
-local exePortrait = Material(
-    "Server/RoundHandler/GameGui/NewStats/SelfIcon/Renders/EXE.png", "smooth")
-local white = Color(255, 255, 255)
-local outline = Color(0, 0, 0, 235)
-local gold = Color(254, 187, 56)
-local magenta = Color(235, 47, 163)
-local ink = Color(12, 10, 21, 175)
 
+local WHITE = Color(255, 255, 255)
+local SHADOW = Color(0, 0, 0, 220)
+local STAMINA_YELLOW = Color(255, 187, 62)
+local HEALTH_RED = Color(248, 62, 73)
+local EARNINGS_PINK = Color(250, 39, 152)
+local SOFT_GREY = Color(211, 221, 227)
+local HEALTH_TEXT = {
+    Color(135, 255, 135),
+    Color(255, 225, 120),
+    Color(255, 135, 135)
+}
+
+-- These are local HUD design coordinates in a 358x345 reference layout.
+-- They scale as a group on different screen heights.
+local W, H = 358, 345
+local prevHeartState
+local shockStarted = -100
 local panel
-local cachedSize
+local cachedScrH
 
-local function scale()
+local function UIscale()
     return math.Clamp(ScrH() / 1080, 0.67, 1.45)
 end
 
-local function px(v)
-    return math.floor(v * scale() + 0.5)
+local function S(value)
+    return math.floor(value * UIscale() + 0.5)
 end
 
--- pk_pills.getMappedEnt uses a Lua-side player field. On the client,
--- it can be missing while the replicated costume/player data is loading.
--- The server now also publishes the currently active EXE pill on the player.
-local function exePill(ply)
-    if not IsValid(ply) or not ply:Alive() then return end
-
-    local networked = ply:GetNWEntity("PC2_ActiveMonsterPill")
-    if IsValid(networked) and networked.GetPillForm
-        and networked:GetPillForm() == "pc2_exe" then
-        return networked
-    end
-
-    if pk_pills and pk_pills.getMappedEnt then
-        local mapped = pk_pills.getMappedEnt(ply)
-        if IsValid(mapped) and mapped.GetPillForm
-            and mapped:GetPillForm() == "pc2_exe" then
-            return mapped
-        end
-    end
+local function showImage(texture, x, y, w, h, color)
+    color = color or WHITE
+    surface.SetMaterial(texture)
+    surface.SetDrawColor(color.r, color.g, color.b, color.a or 255)
+    surface.DrawTexturedRect(S(x), S(y), S(w), S(h))
 end
 
+local function centerImage(texture, x, y, w, h, color)
+    showImage(texture, x - w / 2, y - h / 2, w, h, color)
+end
+
+local function ratio(value, maximum)
+    if maximum <= 0 then return 0 end
+    return math.Clamp(value / maximum, 0, 1)
+end
+
+local function damageState(value)
+    if value >= 0.6 then return 1 end
+    if value >= 0.25 then return 2 end
+    return 3
+end
+
+local function fonts()
+    if cachedScrH == ScrH() then return end
+    cachedScrH = ScrH()
+    surface.CreateFont("PC2_EXE_StatsRef_Name", {
+        font = "Georgia", size = S(19), weight = 800, antialias = true
+    })
+    surface.CreateFont("PC2_EXE_StatsRef_Number", {
+        font = "Trebuchet MS", size = S(25), weight = 1000, antialias = true
+    })
+    surface.CreateFont("PC2_EXE_StatsRef_XP", {
+        font = "Trebuchet MS", size = S(16), weight = 950, antialias = true
+    })
+end
+
+-- Read authoritative server identity even while the client pill mapping loads.
 local function isEXEMonster(ply)
     if not IsValid(ply) or not ply:Alive() then return false end
-
-    -- The role marker allows the HUD to show as soon as a player morphs,
-    -- even if the costume entity is not available clientside yet.
     if ply:GetNWBool("PC2_IsMonster", false)
         and ply:GetNWString("PC2_MonsterForm", "") == "pc2_exe" then
         return true
     end
-
-    return IsValid(exePill(ply))
+    local pill = ply:GetNWEntity("PC2_ActiveMonsterPill")
+    if IsValid(pill) and pill.GetPillForm and pill:GetPillForm() == "pc2_exe" then return true end
+    if pk_pills and pk_pills.getMappedEnt then
+        pill = pk_pills.getMappedEnt(ply)
+        return IsValid(pill) and pill.GetPillForm and pill:GetPillForm() == "pc2_exe"
+    end
+    return false
 end
 
-local function showImage(img, x, y, w, h, tint)
-    tint = tint or white
-    surface.SetMaterial(img)
-    surface.SetDrawColor(tint.r, tint.g, tint.b, tint.a or 255)
-    surface.DrawTexturedRect(px(x), px(y), px(w), px(h))
+local function quadAnnulus(cx, cy, r0, r1, a, b)
+    local ca, sa = math.cos(a), math.sin(a)
+    local cb, sb = math.cos(b), math.sin(b)
+    surface.DrawPoly({
+        { x = cx + r0 * ca, y = cy + r0 * sa },
+        { x = cx + r1 * ca, y = cy + r1 * sa },
+        { x = cx + r1 * cb, y = cy + r1 * sb },
+        { x = cx + r0 * cb, y = cy + r0 * sb }
+    })
 end
 
-local function drawRing(cx, cy, radius, ratio, color)
-    cx, cy, radius = px(cx), px(cy), px(radius)
-    draw.RoundedBox(radius, cx - radius, cy - radius,
-        radius * 2, radius * 2, ink)
-
-    local inner, outer = radius - px(7), radius - px(2)
-    local segments = 48
-    local filled = math.Clamp(ratio, 0, 1) * segments
-    surface.SetDrawColor(color)
+-- Draw a colored ring like the screenshot: subtle unfilled track, glow,
+-- then a bright arc starting at twelve o'clock. Not the old horizontal row.
+local function circularMeter(x, y, rad, percent, ink, background)
+    local scale = UIscale()
+    local cx, cy = S(x), S(y)
+    local outer, inner = rad * scale, (rad - 5) * scale
+    local divisions = 66
+    local filled = math.Clamp(percent, 0, 1) * divisions
+    local starts = -math.pi / 2
     draw.NoTexture()
-    for i = 0, segments - 1 do
-        local portion = math.Clamp(filled - i, 0, 1)
-        if portion > 0 then
-            local a = -math.pi / 2 + (i / segments) * math.pi * 2
-            local b = -math.pi / 2 + ((i + portion) / segments) * math.pi * 2
-            local ca, sa, cb, sb = math.cos(a), math.sin(a), math.cos(b), math.sin(b)
-            surface.DrawPoly({
-                { x = cx + inner * ca, y = cy + inner * sa },
-                { x = cx + outer * ca, y = cy + outer * sa },
-                { x = cx + outer * cb, y = cy + outer * sb },
-                { x = cx + inner * cb, y = cy + inner * sb }
-            })
+
+    surface.SetDrawColor(24, 27, 28, 188)
+    for j = 0, divisions - 1 do
+        local a = starts + j * math.pi * 2 / divisions
+        quadAnnulus(cx, cy, inner, outer, a, a + 2 * math.pi / divisions)
+    end
+
+    if filled > 0 then
+        surface.SetDrawColor(ink.r, ink.g, ink.b, 40)
+        for j = 0, math.ceil(filled) - 1 do
+            local b = math.Clamp(filled - j, 0, 1)
+            if b > 0 then
+                local a = starts + j * math.pi * 2 / divisions
+                quadAnnulus(cx, cy, outer - 2 * scale, outer + 5 * scale,
+                    a, a + b * math.pi * 2 / divisions)
+            end
+        end
+        surface.SetDrawColor(ink.r, ink.g, ink.b, 255)
+        for j = 0, math.ceil(filled) - 1 do
+            local b = math.Clamp(filled - j, 0, 1)
+            if b > 0 then
+                local a = starts + j * math.pi * 2 / divisions
+                quadAnnulus(cx, cy, inner, outer,
+                    a, a + b * math.pi * 2 / divisions)
+            end
         end
     end
 end
 
-local function fonts()
-    local size = ScrH()
-    if cachedSize == size then return end
-    cachedSize = size
-    surface.CreateFont("PC2_EXEStatsName", {
-        font = "Georgia", size = px(18), weight = 850, antialias = true
-    })
-    surface.CreateFont("PC2_EXEStatsNumber", {
-        font = "Trebuchet MS", size = px(26), weight = 1000, antialias = true
-    })
-    surface.CreateFont("PC2_EXEStatsSmall", {
-        font = "Trebuchet MS", size = px(16), weight = 900, antialias = true
-    })
+local function showCount(number, x, y, color)
+    draw.SimpleTextOutlined(
+        tostring(math.floor(number)), "PC2_EXE_StatsRef_Number",
+        S(x), S(y), color, TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER,
+        math.max(1, S(1.8)), SHADOW
+    )
 end
 
-local function createHUD()
+local function createEXEHUD()
     if IsValid(panel) then panel:Remove() end
-    cachedSize = nil
+    cachedScrH = nil
+    prevHeartState = nil
+
     panel = vgui.Create("DPanel")
-    panel:SetPaintBackground(false)
     panel:SetMouseInputEnabled(false)
     panel:SetKeyboardInputEnabled(false)
-    panel:SetZPos(-90)
+    panel:SetPaintBackground(false)
+    panel:SetZPos(-100)
 
     local function resize()
-        panel:SetSize(px(352), px(332))
-        panel:SetPos(px(7), ScrH() - px(339))
+        panel:SetSize(S(W), S(H))
+        panel:SetPos(S(6), ScrH() - S(H) - S(7))
         fonts()
     end
     resize()
 
-    -- Keep sizing separate from visibility. Hidden GMod VGUI panels
-    -- may stop running their Think, so the global hook below must control
-    -- visibility even while the monster HUD is not on screen.
+    -- A hidden panel may stop thinking; drive visibility from global Think.
     panel.PC2Resize = resize
 
-    panel.Paint = function()
-        -- Same ink-splash material as the survivor HUD reference.
-        showImage(splash, -22, 44, 353, 288)
-        -- EXE portrait has transparent edges matching the reference UI.
-        showImage(exePortrait, 19, 94, 179, 183)
+    -- Only the game's dark-blue ink texture is behind the model.
+    -- No large rectangular panel, separators or HUD labels.
+    panel.Paint = function(self, w, h)
+        showImage(art.splash, -23, 44, 353, 292, Color(255, 255, 255, 255))
+        showImage(art.exe, 10, 92, 187, 202)
     end
 
-    panel.PaintOver = function()
+    -- PaintOver renders above the portrait so the name and meters remain crisp.
+    panel.PaintOver = function(self, w, h)
         local ply = LocalPlayer()
         if not isEXEMonster(ply) then return end
-        local pill = exePill(ply)
+
+        local maxHP = math.max(ply:GetMaxHealth(), 1)
+        local hp = math.max(0, ply:Health())
+        local hpRatio = ratio(hp, maxHP)
+        local hpState = damageState(hpRatio)
+        if prevHeartState and hpState > prevHeartState then
+            shockStarted = RealTime()
+        end
+        prevHeartState = hpState
+
+        local maxStamina = math.max(ply:GetNWFloat("PC2_MaxStamina", 100), 1)
+        local stamina = math.Clamp(ply:GetNWFloat("PC2_Stamina", maxStamina), 0, maxStamina)
+        local staminaRatio = ratio(stamina, maxStamina)
+        local staminaState = damageState(staminaRatio)
+
+        local earningsMax = math.max(ply:GetNWInt("PC2_EarningsMax", 100), 1)
+        local earnings = math.max(ply:GetNWInt("PC2_Earnings", 0), 0)
+        local earningsRatio = ratio(earnings, earningsMax)
+
+        local beat = 0 -- EXE has no survivor proximity heartbeat.
 
         local name = ply:Nick()
         if #name > 18 then name = string.sub(name, 1, 17) .. "..." end
-        draw.SimpleTextOutlined(name, "PC2_EXEStatsName",
-            px(111), px(80), white,
-            TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER, px(1), outline)
+        draw.SimpleTextOutlined(name, "PC2_EXE_StatsRef_Name", S(110), S(99),
+            WHITE, TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER, math.max(1, S(1)), SHADOW)
 
-        local maximum = math.max(1, ply:GetNWFloat("PC2_MaxStamina", 105))
-        local stamina = math.Clamp(ply:GetNWFloat("PC2_Stamina", maximum), 0, maximum)
-        local ratio = stamina / maximum
-        local state = ratio >= .6 and 1 or ratio >= .25 and 2 or 3
-        local traps = math.Clamp(IsValid(pill)
-            and pill:GetNWInt("PC2_EXE_TrapCount",
-                ply:GetNWInt("PC2_EXE_TrapCount", 0))
-            or ply:GetNWInt("PC2_EXE_TrapCount", 0), 0, 5)
+        -- Positions taken from the supplied in-game screenshot:
+        -- stamina above, health to the right, earnings directly underneath.
+        local staminaX, staminaY = 241, 99
+        local healthX, healthY = 305, 157
+        local earningsX, earningsY = 235, 218
 
-        -- Amber stamina meter (105 max), purple trap counter (0..5).
-        drawRing(295, 162, 41, ratio, gold)
-        showImage(staminaArt[state], 276, 138, 38, 43,
-            Color(219, 146, 42, 225))
-        draw.SimpleTextOutlined(tostring(math.floor(stamina)), "PC2_EXEStatsNumber",
-            px(295), px(171), Color(255, 220, 151),
-            TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER, px(2), outline)
+        -- Faint, dark circles show through the gaps in the colorful arcs.
+        draw.RoundedBox(S(37), S(staminaX - 37), S(staminaY - 37),
+            S(74), S(74), Color(10, 11, 13, 150))
+        draw.RoundedBox(S(40), S(healthX - 40), S(healthY - 40),
+            S(80), S(80), Color(10, 11, 13, 150))
+        draw.RoundedBox(S(37), S(earningsX - 37), S(earningsY - 37),
+            S(74), S(74), Color(10, 11, 13, 150))
 
-        drawRing(221, 99, 34, traps / 5, magenta)
-        showImage(trapArt, 204, 77, 34, 39,
-            Color(243, 60, 190, 215))
-        draw.SimpleTextOutlined(tostring(traps), "PC2_EXEStatsNumber",
-            px(221), px(105), Color(255, 142, 228),
-            TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER, px(2), outline)
-        draw.SimpleTextOutlined("TRAPS", "PC2_EXEStatsSmall",
-            px(221), px(141), white,
-            TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER, px(1), outline)
+        circularMeter(staminaX, staminaY, 37, staminaRatio, STAMINA_YELLOW)
+        circularMeter(healthX, healthY, 40, hpRatio, HEALTH_RED)
+        circularMeter(earningsX, earningsY, 37, earningsRatio, EARNINGS_PINK)
 
-        local health = math.max(0, ply:Health())
-        local maxHP = math.max(1, ply:GetMaxHealth())
-        local fraction = math.Clamp(health / maxHP, 0, 1)
-        draw.RoundedBox(px(4), px(39), px(291), px(169), px(28),
-            Color(8, 6, 9, 221))
-        draw.RoundedBox(px(3), px(44), px(296), px(159), px(18),
-            Color(61, 30, 30, 239))
-        draw.RoundedBox(px(3), px(44), px(296),
-            math.max(0, px(159) * fraction), px(18),
-            Color(250, 129, 80, 232))
-        draw.SimpleTextOutlined(string.format("%d / %d", health, maxHP),
-            "PC2_EXEStatsSmall", px(123), px(305), white,
-            TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER, px(1), outline)
+        -- Artwork stays underneath the numbers, just like PC2.
+        centerImage(art.stamina[staminaState], staminaX, staminaY, 36, 42,
+            Color(208, 152, 55, 230))
+        centerImage(art.heart[hpState], healthX, healthY, 36 * (1 + beat),
+            44 * (1 + beat))
+
+        local shockAge = RealTime() - shockStarted
+        if shockAge >= 0 and shockAge < 0.4 then
+            local t = shockAge / 0.4
+            local size = 42 + t * 96
+            surface.SetMaterial(art.shock)
+            surface.SetDrawColor(255, 110, 110, math.floor((1 - t) * 53))
+            surface.DrawTexturedRectRotated(S(healthX), S(healthY), S(size), S(size), t * 180)
+        end
+
+        centerImage(art.currency, earningsX, earningsY, 58, 58)
+        showCount(stamina, staminaX, staminaY + 5, Color(255, 218, 145))
+        showCount(hp, healthX, healthY + 4, HEALTH_TEXT[hpState])
+        showCount(earnings, earningsX, earningsY + 5, WHITE)
+
+        -- The PC2 XP slot is included visually for layout accuracy only.
+        -- No XP values or level system are fabricated or tracked.
+        draw.RoundedBox(S(3), S(36), S(303), S(161), S(29), Color(0, 0, 0, 182))
+        draw.RoundedBox(S(2), S(40), S(308), S(147), S(20), Color(18, 18, 18, 175))
+        draw.NoTexture()
+        surface.SetDrawColor(250, 164, 107, 240)
+        surface.DrawPoly({
+            { x = S(42), y = S(308) },
+            { x = S(108), y = S(308) },
+            { x = S(101), y = S(328) },
+            { x = S(42), y = S(328) }
+        })
+        draw.SimpleTextOutlined("XP", "PC2_EXE_StatsRef_XP",
+            S(73), S(318), Color(255, 228, 194), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER,
+            math.max(1, S(1)), SHADOW)
+        draw.SimpleTextOutlined("-- / --", "PC2_EXE_StatsRef_XP",
+            S(143), S(318), WHITE, TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER,
+            math.max(1, S(1)), SHADOW)
     end
 end
 
 hook.Add("Think", "PC2_CreateEXEMonsterHUD", function()
     local ply = LocalPlayer()
     if not IsValid(ply) then return end
-
-    if not IsValid(panel) then createHUD() end
+    if not IsValid(panel) then createEXEHUD() end
     if not IsValid(panel) then return end
-
-    -- This hook keeps running even if the panel is hidden. It also
-    -- immediately hides the monster HUD after EXE is restored/removed.
-    local show = isEXEMonster(ply)
-    if panel:IsVisible() ~= show then panel:SetVisible(show) end
-    if show and panel.PC2Resize
-        and (panel:GetWide() ~= px(352) or panel:GetTall() ~= px(332)
-            or panel.y ~= ScrH() - px(339)) then
+    local visible = isEXEMonster(ply)
+    if panel:IsVisible() ~= visible then panel:SetVisible(visible) end
+    if visible and panel.PC2Resize
+        and (panel:GetWide() ~= S(W) or panel:GetTall() ~= S(H)
+            or panel.y ~= ScrH() - S(H) - S(7)) then
         panel.PC2Resize()
     end
 end)
