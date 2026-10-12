@@ -258,18 +258,8 @@ local function createSurvivorHUD()
     end
     resize()
 
-    panel.Think = function(self)
-        local ply = LocalPlayer()
-        local visible = isSurvivor(ply)
-        self:SetVisible(visible)
-        if not visible then return end
-
-        if self:GetWide() ~= S(W) or self:GetTall() ~= S(H)
-                or self.y ~= ScrH() - S(H) - S(7) then
-            resize()
-        end
-        refreshPortrait(ply)
-    end
+    -- Return to the survivor HUD even if the panel was previously hidden.
+    panel.PC2Resize = resize
 
     -- Only the game's dark-blue ink texture is behind the model.
     -- No large rectangular panel, separators or HUD labels.
@@ -368,9 +358,19 @@ local function createSurvivorHUD()
 end
 
 hook.Add("Think", "PC2_CreateSurvivorHUD", function()
-    if not IsValid(panel) and IsValid(LocalPlayer()) then
-        createSurvivorHUD()
+    local ply = LocalPlayer()
+    if not IsValid(ply) then return end
+    if not IsValid(panel) then createSurvivorHUD() end
+    if not IsValid(panel) then return end
+    local visible = isSurvivor(ply)
+    if panel:IsVisible() ~= visible then panel:SetVisible(visible) end
+    if not visible then return end
+    if panel.PC2Resize and (panel:GetWide() ~= S(W)
+        or panel:GetTall() ~= S(H)
+        or panel.y ~= ScrH() - S(H) - S(7)) then
+        panel.PC2Resize()
     end
+    refreshPortrait(ply)
 end)
 
 hook.Add("OnReloaded", "PC2_ReloadSurvivorHUD", function()
