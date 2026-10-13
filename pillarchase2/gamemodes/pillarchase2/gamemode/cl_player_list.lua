@@ -5,6 +5,16 @@ if SERVER then return end
 local ASSETS = "Server/RoundHandler/GameGui/Top/PlrList/Plr/"
 local border = Material(ASSETS .. "Border.png", "smooth")
 local death = Material(ASSETS .. "Death.png", "smooth")
+local DIED_SOUND = "LobbyGUI/Sounds/Died.wav"
+
+-- Roblox death tween values. Death.png is drawn in the HUD foreground so
+-- the oversized starting image is not clipped by each player's portrait.
+local DEATH_FADE_TIME = 0.35
+local DEATH_SIZE_TIME = 0.50
+local DEATH_START_SIZE = 5.0
+local DEATH_END_SIZE = 1.1
+local DEATH_START_ROTATION = 125
+local DEATH_END_ALPHA = math.Round(255 * (1 - 0.15))
 -- Monsters use a supplied 2D portrait, never a rendered SpawnIcon.
 local exeIcon = Material(
     "Server/RoundHandler/GameGui/NewStats/SelfIcon/Renders/EXEIcon.png",
@@ -18,6 +28,29 @@ local MAX_VISIBLE = 10
 local root, cards = nil, {}
 local nextRoster = 0
 local lastW, lastH = 0, 0
+
+local function sineInOut(t)
+    t = math.Clamp(t, 0, 1)
+    return 0.5 - math.cos(t * math.pi) * 0.5
+end
+
+-- Start the tween only when an existing player transitions from alive to
+-- dead. A player who joins while already dead gets a settled overlay,
+-- without replaying sounds or animations for every HUD refresh.
+local function updateDeathState(card, ply)
+    local deadNow = not ply:Alive()
+    if card.player ~= ply then
+        card.deathStarted = deadNow and (RealTime() - DEATH_SIZE_TIME) or nil
+    elseif deadNow and not card.dead then
+        card.deathStarted = RealTime()
+        surface.PlaySound(DIED_SOUND)
+    elseif not deadNow then
+        card.deathStarted = nil
+    end
+
+    card.player = ply
+    card.dead = deadNow
+end
 
 -- Match Sandbox's playermodel selector: SpawnIcon:SetModel(model) supplies
 -- the cached, static model thumbnail, not a live 3D preview.
@@ -75,16 +108,8 @@ local function createCard()
         surface.SetDrawColor(ink.r, ink.g, ink.b, 255)
         surface.DrawTexturedRect(cx - ring * 0.5, cy - ring * 0.5, ring, ring)
 
-        if self.dead then
-            surface.SetMaterial(death)
-            surface.SetDrawColor(255, 255, 255, 220)
-            local size = ring * 0.46
-            surface.DrawTexturedRect(cx - size * 0.5, cy - size * 0.5,
-                size, size)
-        end
-
-        -- Monster-chance numbers and the small people indicators are
-        -- intentionally omitted until the actual chance system exists.
+        -- Animated death artwork is drawn above all cards by root.PaintOver.
+        -- This avoids clipping the 5x-to-1.1x zoom to the card's bounds.
     end
 
     cards[#cards + 1] = card
@@ -92,8 +117,7 @@ local function createCard()
 end
 
 local function updateCard(card, ply)
-    card.player = ply
-    card.dead = not ply:Alive()
+    updateDeathState(card, ply)
 
     local monsterForm = ply:GetNWString("PC2_MonsterForm", "")
     local isMonster = ply:GetNWBool("PC2_IsMonster", false)
@@ -145,6 +169,39 @@ local function ensureRoot()
     root:SetKeyboardInputEnabled(false)
     root:SetZPos(-80)
     root.Paint = function() end
+
+    -- Draw after every portrait, on a full-screen transparent parent.
+    -- This lets the Roblox-style 5x death icon spin and shrink without
+    -- getting cut off at the individual portrait's rectangular bounds.
+    root.PaintOver = function()
+        local now = RealTime()
+        surface.SetMaterial(death)
+        for _, card in ipairs(cards) do
+            if IsValid(card) and card:IsVisible() and card.dead
+                and card.deathStarted and card.ring then
+
+                local elapsed = math.max(0, now - card.deathStarted)
+                local fade = math.Clamp(elapsed / DEATH_FADE_TIME, 0, 1)
+                local sizeT = sineInOut(elapsed / DEATH_SIZE_TIME)
+                local turnT = sineInOut(elapsed / DEATH_FADE_TIME)
+
+                local size = card.ring * Lerp(sizeT,
+                    DEATH_START_SIZE, DEATH_END_SIZE)
+                local rotation = Lerp(turnT, DEATH_START_ROTATION, 0)
+                local alpha = math.Round(DEATH_END_ALPHA * fade)
+
+                local x, y = card:GetPos()
+                local centerX = x + card:GetWide() * 0.5
+                local centerY = y + card.ring * 0.64
+
+                -- Pure red, not the ring's pink/red role tint.
+                surface.SetDrawColor(255, 0, 0, alpha)
+                surface.DrawTexturedRectRotated(
+                    centerX, centerY, size, size, rotation)
+            end
+        end
+    end
+
     cards = {}
     lastW, lastH = 0, 0
 end
@@ -173,6 +230,14 @@ local function roster()
 end
 
 hook.Add("Think", "PC2_TopPlayerListUpdate", function()
+    -- Track living/dead transitions every frame so the death sound and
+    -- tween don't wait for the slower 0.25-second roster refresh.
+    for _, card in ipairs(cards) do
+        if IsValid(card) and card:IsVisible() and IsValid(card.player) then
+            updateDeathState(card, card.player)
+        end
+    end
+
     if CurTime() < nextRoster then return end
     nextRoster = CurTime() + 0.25
 
@@ -181,7 +246,8 @@ hook.Add("Think", "PC2_TopPlayerListUpdate", function()
 
     local sw, sh = ScrW(), ScrH()
     if lastW ~= sw or lastH ~= sh then
-        root:SetSize(sw, math.max(150, math.Round(sh * 0.23)))
+        -- Full screen for unclipped death animation; otherwise transparent.
+        root:SetSize(sw, sh)
         root:SetPos(0, 0)
         lastW, lastH = sw, sh
     end
