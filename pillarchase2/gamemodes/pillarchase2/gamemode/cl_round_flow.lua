@@ -35,6 +35,9 @@ local EXE_TIP_TEXT = {
 }
 local selectedTip
 local warnedMissingTipArt = false
+-- drawEXETip is defined before the text utilities below. Forward declare
+-- so it captures the actual local renderer, not an absent global function.
+local centerLine
 
 local function loadEXETip()
     local dir = "materials/" .. EXE_TIP_DIR
@@ -194,7 +197,7 @@ local function ensureFonts()
     })
 end
 
-local function centerLine(text, font, x, y, color, alpha)
+centerLine = function(text, font, x, y, color, alpha)
     local col = Color(color.r, color.g, color.b, alpha or 255)
     draw.SimpleTextOutlined(text, font, x, y, col,
         TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER, 2, Color(0, 0, 0, alpha or 255))
