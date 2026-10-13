@@ -8,6 +8,22 @@ GM.SurvivorRunStuds = 23
 GM.SurvivorWalkSpeed = GM.SurvivorWalkStuds * UNITS_PER_STUD
 GM.SurvivorRunSpeed = GM.SurvivorRunStuds * UNITS_PER_STUD
 
+-- Unlike the original Roblox studs/s values, Source's movement pipeline
+-- can apply a global sv_maxspeed ceiling (often 320 units/s). Our requested
+-- 23 Roblox studs/s equals ~338 Source units/s, so make sure the server
+-- ceiling is not lower than the intended survivor run speed.
+local function ensureSourceSpeedCeiling()
+    if not SERVER then return end
+    local cap = GetConVar("sv_maxspeed")
+    if not cap then return end
+    local required = math.ceil(GM.SurvivorRunSpeed)
+    if cap:GetFloat() < required then
+        cap:SetFloat(required)
+        print(string.format("[PC2 Movement] sv_maxspeed raised to %d "
+            .. "to allow the full 23-stud/s survivor sprint.", required))
+    end
+end
+
 -- PC2 Wiki survivor stamina figures supplied by the project author:
 -- -2 / 0.2s sprinting, +4 / 0.2s while resting, winded for 3.25s.
 GM.SurvivorStaminaMax = 100
@@ -43,6 +59,7 @@ function GM:PlayerSpawn(ply, transition)
     ply:SetSlowWalkSpeed(self.SurvivorWalkSpeed)
 
     if SERVER then
+        ensureSourceSpeedCeiling()
         ply.PC2Stamina = self.SurvivorStaminaMax
         ply.PC2Winded = false
         ply.PC2WindedEnd = 0
@@ -93,29 +110,51 @@ hook.Add("StartCommand", "PC2_SurvivorMovementInput", function(ply, cmd)
     end
 end)
 
-hook.Add("SetupMove", "PC2_SurvivorExhaustionSpeed", function(ply, mv, cmd)
-    if not GAMEMODE or not GAMEMODE:IsPC2Survivor(ply) then return end
-    if not sprintBlocked(ply) then return end
+-- Enforce both movement caps on SERVER and CLIENT every prediction tick,
+-- not only on PlayerSpawn. The stamina module previously only *reduced*
+-- the caps on exhaustion, so it could never correct a 320-unit Source cap,
+-- stale spawn speed, or slow client-side prediction after stamina changes.
+-- Normal healthy movement is strictly 8/23 Roblox studs per second.
+hook.Add("SetupMove", "PC2_SurvivorExactMoveSpeed", function(ply, mv)
+    if not GAMEMODE or not GAMEMODE:IsPC2Survivor(ply)
+        or not ply:Alive() or ply:GetNWBool("PC2_Eliminated", false) then
+        return
+    end
 
-    -- Prevent any client input from bypassing forced-walk speed.
-    local speed = GAMEMODE.SurvivorWalkSpeed
-    if mv:GetMaxSpeed() > speed then mv:SetMaxSpeed(speed) end
-    if mv:GetMaxClientSpeed() > speed then mv:SetMaxClientSpeed(speed) end
-end)
-
--- Apply the 15% broken-bone penalty to BOTH client prediction and
--- server movement; never permanently overwrite the player's base speeds.
-hook.Add("SetupMove", "PC2_BrokenBoneMovement", function(ply, mv)
-    if not GAMEMODE or not GAMEMODE:IsPC2Survivor(ply) then return end
-    if not ply:Alive() or not ply:GetNWBool("PC2_BrokenBone", false) then return end
-
-    local sprinting = bit.band(mv:GetButtons(), IN_SPEED) ~= 0
-    local normalSpeed = sprinting and GAMEMODE.SurvivorRunSpeed
+    -- IN_SPEED has already been stripped by StartCommand when exhausted.
+    -- A held +walk bind never counts as sprinting.
+    local buttons = mv:GetButtons()
+    local sprinting = bit.band(buttons, IN_SPEED) ~= 0
+        and bit.band(buttons, IN_WALK) == 0
+        and not sprintBlocked(ply)
+    local targetSpeed = sprinting and GAMEMODE.SurvivorRunSpeed
         or GAMEMODE.SurvivorWalkSpeed
-    local limit = normalSpeed * 0.85
 
-    if mv:GetMaxSpeed() > limit then mv:SetMaxSpeed(limit) end
-    if mv:GetMaxClientSpeed() > limit then mv:SetMaxClientSpeed(limit) end
+    -- Preserve the previously implemented 15% injury penalty instead of
+    -- baking it into the base speed, and respect the 3.25s winded limit.
+    if ply:GetNWBool("PC2_BrokenBone", false) then
+        targetSpeed = targetSpeed * 0.85
+    end
+
+    -- Don't undo engine crouch / deliberate +walk reduction. The source
+    -- input velocity still applies crouch slowdown even with a higher cap,
+    -- but explicitly avoid raising its special-mode cap just in case.
+    local reducedMovement = ply:Crouching()
+        or bit.band(buttons, IN_DUCK) ~= 0
+        or bit.band(buttons, IN_WALK) ~= 0
+    if reducedMovement then
+        if mv:GetMaxSpeed() > 0 then
+            targetSpeed = math.min(targetSpeed, mv:GetMaxSpeed())
+        end
+        if mv:GetMaxClientSpeed() > 0 then
+            targetSpeed = math.min(targetSpeed, mv:GetMaxClientSpeed())
+        end
+    end
+
+    -- Both are required; SetMaxClientSpeed alone may not match server
+    -- prediction, and SetMaxSpeed alone may have no effect in SetupMove.
+    mv:SetMaxSpeed(targetSpeed)
+    mv:SetMaxClientSpeed(targetSpeed)
 end)
 
 if SERVER then
@@ -149,7 +188,22 @@ if SERVER then
         if not gm then return end
 
         for _, ply in ipairs(player.GetAll()) do
-            if not gm:IsPC2Survivor(ply) or not ply:Alive() then continue end
+            if not gm:IsPC2Survivor(ply) or not ply:Alive()
+                or ply:GetNWBool("PC2_Eliminated", false) then continue end
+
+            -- Gamemode/player-class or pill respawns can reset these
+            -- values independently of stamina. Keep them authoritative
+            -- without repeatedly resetting the stamina itself.
+            if ply:GetWalkSpeed() ~= gm.SurvivorWalkSpeed then
+                ply:SetWalkSpeed(gm.SurvivorWalkSpeed)
+            end
+            if ply:GetRunSpeed() ~= gm.SurvivorRunSpeed then
+                ply:SetRunSpeed(gm.SurvivorRunSpeed)
+            end
+            if ply:GetSlowWalkSpeed() ~= gm.SurvivorWalkSpeed then
+                ply:SetSlowWalkSpeed(gm.SurvivorWalkSpeed)
+            end
+
             if ply.PC2Stamina == nil then continue end
 
             if ply.PC2Winded then
@@ -205,3 +259,29 @@ if SERVER then
         end
     end)
 end
+
+-- Inspect actual server/client player speeds and horizontal velocity. Use
+-- "pc2_speed_debug" in the client console while holding W and Shift; once
+-- fully accelerated on level ground, velocity should approach 8 or 23
+-- Roblox studs/s (not Source units/s). Commands work on both realms.
+concommand.Add("pc2_speed_debug", function(ply)
+    local target = SERVER and ply or LocalPlayer()
+    if not IsValid(target) then
+        print("[PC2 Speed] Run this as a player (client console).")
+        return
+    end
+    local actualStuds = target:GetVelocity():Length2D() / UNITS_PER_STUD
+    local shiftHeld = SERVER and target.PC2RawSprintHeld == true
+        or (CLIENT and (input.IsKeyDown(KEY_LSHIFT)
+            or input.IsKeyDown(KEY_RSHIFT)))
+    print(string.format(
+        "[PC2 Speed] %s walk=%.2f/%.2f run=%.2f/%.2f Source units/s; "
+        .. "velocity=%.2f Roblox studs/s; stamina=%.0f; "
+        .. "exhausted=%s brokenBone=%s sprintHeld=%s",
+        target:Nick(), target:GetWalkSpeed(), GM.SurvivorWalkSpeed,
+        target:GetRunSpeed(), GM.SurvivorRunSpeed, actualStuds,
+        target:GetNWFloat("PC2_Stamina", 100),
+        tostring(target:GetNWBool("PC2_Exhausted", false)),
+        tostring(target:GetNWBool("PC2_BrokenBone", false)),
+        tostring(shiftHeld)))
+end)

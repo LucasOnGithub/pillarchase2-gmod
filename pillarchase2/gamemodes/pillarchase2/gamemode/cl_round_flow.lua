@@ -26,17 +26,15 @@ local intermissionPulseSpeed = 5
 local intermissionPulseAmount = 0.08
 local warnedIntermissionMaterials = false
 
--- Original Roblox Sound.PlaybackSpeed lives on the GUI Sound instance,
--- not in these decompiled Lua scripts. Tune the speed by ear in GMod:
--- 100 = unmodified WAV, 125 = 25% faster (initial approximation).
--- EmitSound entity index -2 is non-positional UI audio.
-local darkFadePitch = CreateClientConVar(
-    "pc2_darkfade_pitch", "125", true, false,
-    "DarkFade sound pitch (100=unaltered, 125=1.25x playback)")
+-- Exact Sound instance properties from the original Roblox LobbyGUI:
+--   PlaybackSpeed = 1.25, Volume = 0.65.
+-- EmitSound pitch uses 100 = 1.00x and volume uses a 0..1 fraction.
+-- -2 is GMod's non-spatial UI sound channel, preserving the original.
+local DARKFADE_PITCH = 125
+local DARKFADE_VOLUME = 0.65
 local function playDarkFade()
-    local pitch = math.Clamp(darkFadePitch:GetInt(), 100, 200)
     EmitSound("LobbyGUI/Sounds/DarkFade.wav", Vector(0, 0, 0),
-        -2, CHAN_AUTO, 1, 75, 0, pitch, 0)
+        -2, CHAN_AUTO, DARKFADE_VOLUME, 75, 0, DARKFADE_PITCH, 0)
 end
 
 -- Exact static textures imported from the original intro UI.
