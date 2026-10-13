@@ -296,11 +296,12 @@ hook.Add("Think", "PC2_TopPlayerListUpdate", function()
     local count = math.min(#players, MAX_VISIBLE)
     local left = math.ceil(count / 2)
     local timerSize = math.Clamp(math.Round(sh * 0.12), 96, 156)
-    -- Roblox UDim2.new(1.638, 0, 1.638, 0) applies to the ORIGINAL
-    -- portrait square, not a square reduced to 62% beforehand. That
-    -- old factor nearly cancelled out the 1.638 scale and left tiny
-    -- borders. Keep this independent of roster size and monster role.
-    local portraitSize = math.Round(timerSize * 0.86)
+    -- UDim2.new(1.638, 0, 1.638, 0) means 1.638 times the
+    -- portrait holder's dimensions (no pixel offsets). Use the compact
+    -- reference holder that matched the timer rather than treating the
+    -- timer-sized preview as the holder. Drawing in the shared root layer
+    -- keeps the same diameter when players join or change roles.
+    local portraitSize = math.Round(timerSize * 0.86 * 0.62)
     local ring = portraitSize * BORDER_SCALE
 
     for i = 1, count do
