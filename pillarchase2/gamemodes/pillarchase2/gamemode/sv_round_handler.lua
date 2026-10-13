@@ -79,6 +79,10 @@ local function lobbyPlayer(ply)
     ply:SetNWBool("PC2_Eliminated", false)
     ply:SetNWString("PC2_RoundRole", "Lobby")
     if not ply:Alive() then ply:Spawn() end
+    -- The EXE pill raises its owner's maximum HP to 9999. Fully reset
+    -- both values when returning to the lobby for the next survivor round.
+    ply:SetMaxHealth(100)
+    ply:SetHealth(100)
 end
 
 local function spectator(ply)
@@ -183,7 +187,7 @@ local function selectSpawnPoint(points)
     local best, camPos, camAng, score = nil, nil, nil, -1
     for _, spot in ipairs(points) do
         local c, a, d = cameraAt(spot)
-        if c and d and d > score then
+        if c and d and d >= 160 and d > score then
             best, camPos, camAng, score = spot, c, a, d
         end
     end
@@ -191,27 +195,32 @@ local function selectSpawnPoint(points)
 end
 
 local function selectSurvivorSpawns(points, origin, amount)
-    local result, remaining = {}, table.Copy(points)
-    local taken = {}
-    for _ = 1, amount do
-        if #remaining == 0 then break end
-        local best, bestI, bestScore
-        for index, spot in ipairs(remaining) do
-            local gap = spot.pos:Distance(origin)
-            local spread = gap
-            for _, other in ipairs(taken) do
-                spread = math.min(spread, spot.pos:Distance(other))
-            end
-            local score = (gap >= MIN_SPAWN_GAP and 20000 or 0)
-                + math.min(gap, 3000) + math.min(spread, 1100) * 0.4
-                + math.Rand(0, 20)
-            if not bestScore or score > bestScore then
-                best, bestI, bestScore = spot, index, score
-            end
+    -- Never reuse EXE's spawn or put survivors within 950 units of it.
+    -- Choose randomly from the valid pool, favouring separated survivors.
+    local eligibleSpawns = {}
+    for _, spot in ipairs(points) do
+        if spot.pos:DistToSqr(origin) >= MIN_SPAWN_GAP * MIN_SPAWN_GAP then
+            eligibleSpawns[#eligibleSpawns + 1] = spot
         end
-        result[#result + 1] = best
-        taken[#taken + 1] = best.pos
-        table.remove(remaining, bestI)
+    end
+    if #eligibleSpawns < amount then return {} end
+    local result = {}
+    for _ = 1, amount do
+        local separated = {}
+        for _, spot in ipairs(eligibleSpawns) do
+            local okay = true
+            for _, taken in ipairs(result) do
+                if spot.pos:DistToSqr(taken.pos) < 300 * 300 then
+                    okay = false
+                    break
+                end
+            end
+            if okay then separated[#separated + 1] = spot end
+        end
+        if #separated == 0 then separated = eligibleSpawns end
+        local choice = separated[math.random(#separated)]
+        result[#result + 1] = choice
+        table.RemoveByValue(eligibleSpawns, choice)
     end
     return result
 end
@@ -264,6 +273,12 @@ local function startRound()
     monsterStart, introCamera, introAngles = selectSpawnPoint(points)
     if not monsterStart or not introCamera then resetRound() return end
     spawnChoices = selectSurvivorSpawns(points, monsterStart.pos, #all - 1)
+    if #spawnChoices < #all - 1 then
+        print("[PC2 Round] Map lacks enough clear spawn points at least "
+            .. MIN_SPAWN_GAP .. " units from EXE; round cancelled.")
+        resetRound()
+        return
+    end
 
     local duration = math.min(ROUND_BASE + math.max(0, #all - 2)
         * ROUND_PER_EXTRA_PLAYER, ROUND_MAX)
@@ -282,6 +297,8 @@ local function startRound()
         ply:SetNoTarget(false)
         if isfunction(restore) then restore(ply, true) end
         ply:Spawn()
+        ply:SetMaxHealth(100)
+        ply:SetHealth(100)
         ply:Freeze(true)
     end
 

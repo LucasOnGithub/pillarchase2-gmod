@@ -704,7 +704,11 @@ function ENT:Think()
         -- camera is at the front of the head. Arms, torso and legs stay
         -- rendered. Restore the head whenever third-person is selected.
         if localPlayer and self.formTable.firstPersonHideHead then
+            -- EXE's first-person camera normally hides the head bone.
+            -- Reveal it during the intro's separate cinematic camera so
+            -- the monster does not appear headless while on display.
             local hideHead = self:GetNWBool("PC2_EXE_FirstPerson", true)
+                and GetGlobalString("PC2_RoundMode", "Waiting") ~= "Intro"
             local bone = puppet:LookupBone("Head")
             if bone and self.PC2HeadIsHidden ~= hideHead then
                 puppet:ManipulateBoneScale(bone, hideHead
