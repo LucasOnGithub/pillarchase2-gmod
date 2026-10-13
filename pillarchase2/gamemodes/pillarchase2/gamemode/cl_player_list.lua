@@ -27,6 +27,11 @@ local MAX_VISIBLE = 10
 -- Roblox UDim2.new(1.638, 0, 1.638, 0): each border is exactly
 -- 1.638 times the portrait's width AND height (zero pixel offsets).
 local BORDER_SCALE = 1.638
+-- The EXE PNG is a full uncropped square, unlike the tightly framed
+-- Sandbox player thumbnails. Crop its center by the SAME 1.638 factor
+-- so switching to EXE doesn't make the visible face appear to shrink.
+-- This changes artwork framing, NOT the survivor's correct border size.
+local EXE_PORTRAIT_ZOOM = 1.638
 
 local root, cards = nil, {}
 local nextRoster = 0
@@ -100,14 +105,18 @@ local function createCard()
         bloom = ring * 1.16
         surface.DrawTexturedRect(cx - bloom / 2, cy - bloom / 2, bloom, bloom)
 
-        -- Draw EXE's original 2D UI portrait INSIDE the border opening.
-        -- This never renders the monster model or generates a SpawnIcon.
+        -- Match the apparent size of the Sandbox survivor model thumbnail.
+        -- Keep the same square inside the unchanged 1.638x border, but
+        -- zoom the EXE artwork with texture coordinates so none of it
+        -- spills outside the ring. EXE is still a static PNG, no viewport.
         if self.isEXE then
             local hole = ring / BORDER_SCALE
+            local crop = (1 - 1 / EXE_PORTRAIT_ZOOM) * 0.5
             surface.SetMaterial(exeIcon)
             surface.SetDrawColor(255, 255, 255, 255)
-            surface.DrawTexturedRect(cx - hole * 0.5, cy - hole * 0.5,
-                hole, hole)
+            surface.DrawTexturedRectUV(
+                cx - hole * 0.5, cy - hole * 0.5,
+                hole, hole, crop, crop, 1 - crop, 1 - crop)
         end
     end
 
