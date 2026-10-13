@@ -26,6 +26,19 @@ local intermissionPulseSpeed = 5
 local intermissionPulseAmount = 0.08
 local warnedIntermissionMaterials = false
 
+-- Original Roblox Sound.PlaybackSpeed lives on the GUI Sound instance,
+-- not in these decompiled Lua scripts. Tune the speed by ear in GMod:
+-- 100 = unmodified WAV, 125 = 25% faster (initial approximation).
+-- EmitSound entity index -2 is non-positional UI audio.
+local darkFadePitch = CreateClientConVar(
+    "pc2_darkfade_pitch", "125", true, false,
+    "DarkFade sound pitch (100=unaltered, 125=1.25x playback)")
+local function playDarkFade()
+    local pitch = math.Clamp(darkFadePitch:GetInt(), 100, 200)
+    EmitSound("LobbyGUI/Sounds/DarkFade.wav", Vector(0, 0, 0),
+        -2, CHAN_AUTO, 1, 75, 0, pitch, 0)
+end
+
 -- Exact static textures imported from the original intro UI.
 -- The "FirstStatic" and "StaticUI" layers each contain two noise
 -- frames. Alternate the actual PNG frames; do not synthesize stripes.
@@ -326,15 +339,15 @@ local function onPhaseChange(nextMode)
     local ply = LocalPlayer()
     if nextMode == "Intro" and participant(ply) then
         surface.PlaySound("Map/Intro/Low.wav")
-        surface.PlaySound("LobbyGUI/Sounds/DarkFade.wav")
+        playDarkFade()
     elseif nextMode == "Tips" and participant(ply) then
         selectedTip = loadEXETip()
-        surface.PlaySound("LobbyGUI/Sounds/DarkFade.wav")
+        playDarkFade()
     elseif nextMode == "Reveal" and participant(ply) then
         surface.PlaySound("LobbyGUI/Sounds/Fade1.wav")
         surface.PlaySound("LobbyGUI/Sounds/Boom.wav")
     elseif nextMode == "Ending" and participant(ply) then
-        surface.PlaySound("LobbyGUI/Sounds/DarkFade.wav")
+        playDarkFade()
     elseif nextMode == "Waiting" or nextMode == "Intermission" then
         introPos, introAngle = nil, nil
         selectedTip = nil
@@ -450,21 +463,30 @@ hook.Add("HUDPaint", "PC2_RoundSequenceScreen", function()
             GetGlobalInt("PC2_TimerSeconds", 60), 0))
         drawIntermissionHUD(sw, remaining)
     elseif state == "Intro" and participant(LocalPlayer()) then
-        local t = progress()
-        if t < 0.15 then
-            shade(255 * (1 - t / 0.15))
-        elseif t > 0.83 then
-            shade(255 * math.Clamp((t - 0.83) / 0.17, 0, 1))
+        -- Roblox EXE Intro script:
+        --   0.10s wait, then Darkness fades out over 0.45s.
+        --   IntroValue >= 2.12 occurs about 1.97s after its tween begins;
+        --   Darkness then fades back in over only 0.10s.
+        -- Our shortened no-Faker intro keeps these actual timings.
+        local seconds = math.max(0, CurTime()
+            - GetGlobalFloat("PC2_PhaseStart", CurTime()))
+        if seconds < 0.1 then
+            shade(255)
+        elseif seconds < 0.55 then
+            shade(255 * (1 - (seconds - 0.1) / 0.45))
+        elseif seconds >= 1.97 and seconds < 2.07 then
+            shade(255 * (seconds - 1.97) / 0.1)
+        elseif seconds >= 2.07 then
+            shade(255)
         end
-        -- The original Roblox intro fades in FirstStatic after its first
-        -- beat (ImageTransparency -> 0.68), then enables StaticUI for the
-        -- static-out. Use ONLY the imported image frames in Map/Intro.
-        if t >= 0.2 and t < 0.56 then
+        -- The imported source static image fades to 32% opacity in
+        -- 1.22 seconds from the 0.93-second cue. Follow it with the
+        -- actual StaticUI PNGs for the static-out.
+        if seconds >= 0.93 and seconds < 2.12 then
             drawImportedStatic(firstStaticFrames,
-                82 * math.Clamp((t - 0.2) / 0.2, 0, 1))
-        elseif t >= 0.56 and t < 0.94 then
-            drawImportedStatic(staticUIFrames,
-                255 * math.Clamp((t - 0.56) / 0.08, 0, 1))
+                82 * math.Clamp((seconds - 0.93) / 1.22, 0, 1))
+        elseif seconds >= 2.12 and seconds < 3.8 then
+            drawImportedStatic(staticUIFrames, 255)
         end
     elseif state == "Tips" and participant(LocalPlayer()) then
         -- Solid black backing hides the delayed EXE morph and teleport.
