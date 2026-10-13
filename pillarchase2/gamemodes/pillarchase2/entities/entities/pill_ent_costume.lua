@@ -728,20 +728,48 @@ function ENT:Think()
         puppet:SetRenderOrigin(ply:GetPos())
     end
 
-    -- The previous comparison against >350 could NEVER be true:
-    -- math.AngleDifference is always within -180 to +180 degrees.
-    -- EXE must follow aim yaw even while completely stationary. Other
-    -- pill forms keep their previous idle facing if desired.
+    -- Outcome Memories-style third-person facing: the SERVER owns the
+    -- monster's view-yaw direction and applies it to the actual puppet.
+    -- Replicate yaw for spectators/survivors; only the owning client uses
+    -- predicted EyeAngles to avoid a delayed, jerky third-person turn.
+    -- Other pill forms retain their existing locomotion-facing behaviour.
     local rotateWhenIdle = self.formTable.rotateWhenIdle
     if rotateWhenIdle or vel > 0 then
-        local angles = ply:EyeAngles()
-        angles.p = 0
-        angles.r = 0
-
-        if SERVER then
-            puppet:SetAngles(angles)
+        if self.formTable.syncedAimFacing then
+            if SERVER then
+                local yaw = ply:EyeAngles().y
+                puppet:SetAngles(Angle(0, yaw, 0))
+                if self.PC2LastFacingYaw == nil
+                    or math.abs(math.AngleDifference(yaw, self.PC2LastFacingYaw)) >= 0.5 then
+                    self.PC2LastFacingYaw = yaw
+                    self:SetNW2Float("PC2_MonsterFacingYaw", yaw)
+                end
+            elseif ply == LocalPlayer() then
+                -- Instantly follow the local view even in third person.
+                puppet:SetRenderAngles(Angle(0, ply:EyeAngles().y, 0))
+            else
+                -- Remote clients see the same server-authored direction,
+                -- smoothly interpolated across network updates.
+                local targetYaw = self:GetNW2Float(
+                    "PC2_MonsterFacingYaw", puppet:GetAngles().y)
+                if self.PC2RemoteFacingYaw == nil then
+                    self.PC2RemoteFacingYaw = targetYaw
+                end
+                local old = Angle(0, self.PC2RemoteFacingYaw, 0)
+                local goal = Angle(0, targetYaw, 0)
+                local smooth = LerpAngle(math.min(FrameTime() * 16, 1), old, goal)
+                self.PC2RemoteFacingYaw = smooth.y
+                puppet:SetRenderAngles(smooth)
+            end
         else
-            puppet:SetRenderAngles(angles)
+            local angles = ply:EyeAngles()
+            angles.p = 0
+            angles.r = 0
+            if SERVER then
+                puppet:SetAngles(angles)
+            else
+                puppet:SetRenderAngles(angles)
+            end
         end
     end
 

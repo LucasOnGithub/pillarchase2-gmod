@@ -115,12 +115,21 @@ local function enemy(ply, other)
     return (other:IsNPC() or other:IsNextBot()) and other:Health() > 0
 end
 
+-- Attack cones and animations must use the SAME facing direction.
+-- The base costume Think sets puppet angles from the server's player view
+-- yaw, so this also matches the direction other survivors actually see.
+local function monsterFacingForward(ply, ent)
+    local puppet = IsValid(ent) and ent:GetPuppet()
+    if IsValid(puppet) then
+        return Angle(0, puppet:GetAngles().y, 0):Forward()
+    end
+    return Angle(0, ply:EyeAngles().y, 0):Forward()
+end
+
 local function getVictims(ply, ent, radius, minimumDot)
     local victims = {}
     local origin = ply:GetPos() + Vector(0, 0, 44)
-    local forward = ply:EyeAngles():Forward()
-    forward.z = 0
-    forward:Normalize()
+    local forward = monsterFacingForward(ply, ent)
     for _, other in ipairs(ents.FindInSphere(origin, radius)) do
         if enemy(ply, other) then
             local destination = other:WorldSpaceCenter()
@@ -266,7 +275,8 @@ local function thornyGrave(ply, ent)
     timer.Simple(TRAP_PLACE_DELAY, function()
         if not isEXE(ent) or not ply:Alive() then return end
         local puppet = ent:GetPuppet()
-        local spawnPos = ply:GetPos() + ply:GetForward() * 25 + Vector(0, 0, 15)
+        local spawnPos = ply:GetPos() + monsterFacingForward(ply, ent) * 25
+            + Vector(0, 0, 15)
         if IsValid(puppet) then
             local bone = puppet:LookupBone("LeftHand")
             if bone then
@@ -286,7 +296,7 @@ local function thornyGrave(ply, ent)
         local trap = ents.Create(TRAP)
         if not IsValid(trap) then return end
         trap:SetPos(spawnPos)
-        trap:SetAngles(Angle(0, ply:EyeAngles().y, 0))
+        trap:SetAngles(Angle(0, monsterFacingForward(ply, ent):Angle().y, 0))
         trap:SetOwner(ply)
         trap:SetNWEntity("PC2_EXEOwner", ply)
         trap:SetNWEntity("PC2_EXEPill", ent)
@@ -447,6 +457,8 @@ pk_pills.register(ID, {
     firstPersonBody = true,
     firstPersonHideHead = true,
     rotateWhenIdle = true,
+    -- Match third-person look yaw on the server, so survivors see EXE turn.
+    syncedAimFacing = true,
     -- Bone entry format from the supplied code:
     -- { bone name, forward, right, vertical } (Source units).
     -- EXE has UpperTorso rather than a bone literally named "Spine".
