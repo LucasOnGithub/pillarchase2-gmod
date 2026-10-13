@@ -189,9 +189,21 @@ local function ensureRoot()
         end
     end
 
-    -- Paint AFTER every SpawnIcon panel. Unlike card.PaintOver, these
-    -- borders can never be obscured by a different player's later panel.
-    root.PaintOver = function()
+    -- Foreground borders move out of the VGUI hierarchy. The EXE monster
+    -- status HUD adds another top-level VGUI panel upon morphing, which
+    -- can draw above this parent and obscure part of its 1.638x rings.
+    root.PaintOver = function() end
+
+    cards = {}
+    lastW, lastH = 0, 0
+end
+
+-- Screen-space overlay paints on top of every VGUI panel, at unchanged
+-- pixel dimensions whether the card is survivor or EXE.
+hook.Add("PostRenderVGUI", "PC2_TopPlayerListForeground", function()
+    if not IsValid(root) then return end
+    if gui.IsGameUIVisible() then return end
+
         -- EXE uses ONLY the PNG artwork at 85% of the inner opening.
         for _, card in ipairs(cards) do
             local cx, cy, ring = cardCircle(card)
@@ -240,11 +252,31 @@ local function ensureRoot()
                     cx, cy, size, size, rotation)
             end
         end
-    end
+end)
 
-    cards = {}
-    lastW, lastH = 0, 0
-end
+-- Diagnostics: run pc2_topbar_debug before and after morphing to print
+-- each border diameter and verify the underlying pixel size is stable.
+concommand.Add("pc2_topbar_debug", function()
+    local baseTimer = math.Clamp(math.Round(ScrH() * 0.12), 96, 156)
+    local portrait = math.Round(baseTimer * 0.86 * 0.62)
+    local calculatedRing = portrait * BORDER_SCALE
+    print(string.format(
+        "[PC2 topbar] screen=%dx%d timer=%d portrait=%d border=%.2fpx",
+        ScrW(), ScrH(), baseTimer, portrait, calculatedRing))
+    local count = 0
+    for _, card in ipairs(cards) do
+        if IsValid(card) and card:IsVisible() then
+            count = count + 1
+            local ply = card.player
+            local cx, cy, ring = cardCircle(card)
+            print(string.format(
+                "[PC2 topbar] slot=%d player=%s EXE=%s border=%.2fpx center=(%.1f,%.1f)",
+                count, IsValid(ply) and ply:Nick() or "unknown",
+                tostring(card.isEXE), ring or -1, cx or -1, cy or -1))
+        end
+    end
+    print(string.format("[PC2 topbar] visible cards=%d", count))
+end)
 
 local function roster()
     local players = {}
