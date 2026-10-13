@@ -86,48 +86,12 @@ local function createCard()
     card.avatar:SetKeyboardInputEnabled(false)
     card.avatar:SetSize(64, 64)
 
-    card.Paint = function(self, w, h)
-        local ring = self.ring or 64
-        local cx, cy = w * 0.5, ring * 0.64
-        local color = self.danger and BAD or GOOD
-
-        draw.RoundedBox(ring * 0.33, cx - ring * 0.37, cy - ring * 0.37,
-            ring * 0.74, ring * 0.74, Color(10, 13, 15, 225))
-
-        -- Reuse the actual supplied circular artwork for both glow and rim.
-        surface.SetMaterial(border)
-        surface.SetDrawColor(color.r, color.g, color.b, 18)
-        local bloom = ring * 1.32
-        surface.DrawTexturedRect(cx - bloom / 2, cy - bloom / 2, bloom, bloom)
-        surface.SetDrawColor(color.r, color.g, color.b, 38)
-        bloom = ring * 1.16
-        surface.DrawTexturedRect(cx - bloom / 2, cy - bloom / 2, bloom, bloom)
-
-        -- EXE uses a flat PNG centered inside the ring, at 85% of the
-        -- same portrait opening. Survivor thumbnails and 1.638x borders
-        -- are unchanged, including when the player switches roles.
-        if self.isEXE then
-            local iconSize = (ring / BORDER_SCALE) * EXE_ICON_SCALE
-            surface.SetMaterial(exeIcon)
-            surface.SetDrawColor(255, 255, 255, 255)
-            surface.DrawTexturedRect(
-                cx - iconSize * 0.5, cy - iconSize * 0.5,
-                iconSize, iconSize)
-        end
-    end
-
-    card.PaintOver = function(self, w, h)
-        local ring = self.ring or 64
-        local cx, cy = w * 0.5, ring * 0.64
-        local ink = self.danger and BAD or GOOD
-
-        surface.SetMaterial(border)
-        surface.SetDrawColor(ink.r, ink.g, ink.b, 255)
-        surface.DrawTexturedRect(cx - ring * 0.5, cy - ring * 0.5, ring, ring)
-
-        -- Animated death artwork is drawn above all cards by root.PaintOver.
-        -- This avoids clipping the 5x-to-1.1x zoom to the card's bounds.
-    end
+    -- Only the static SpawnIcon lives inside each small card. Draw the
+    -- circular backgrounds and ALL borders on the full-screen parent
+    -- instead. New siblings can otherwise cover an existing card's ring
+    -- and make it look smaller after another player joins.
+    card.Paint = function() end
+    card.PaintOver = function() end
 
     cards[#cards + 1] = card
     return card
@@ -177,6 +141,34 @@ local function layoutCard(card, index, side, numLeft, ring, timerSize, portraitS
         math.Round(ring * 0.64 - portraitSize * 0.5))
 end
 
+-- Every ring is drawn in root coordinates at this fixed, stored diameter.
+-- Neither player count, card order nor monster status changes its size.
+local function cardCircle(card)
+    if not IsValid(card) or not card:IsVisible() or not card.ring then
+        return nil
+    end
+    local x, y = card:GetPos()
+    return x + card:GetWide() * 0.5, y + card.ring * 0.64, card.ring
+end
+
+local function drawRingBackdrop(cx, cy, ring, ink)
+    draw.RoundedBox(ring * 0.33,
+        cx - ring * 0.37, cy - ring * 0.37,
+        ring * 0.74, ring * 0.74, Color(10, 13, 15, 225))
+
+    -- The supplied Border.png provides the same faint outer glow.
+    surface.SetMaterial(border)
+    surface.SetDrawColor(ink.r, ink.g, ink.b, 18)
+    local bloom = ring * 1.32
+    surface.DrawTexturedRect(cx - bloom * 0.5, cy - bloom * 0.5,
+        bloom, bloom)
+
+    surface.SetDrawColor(ink.r, ink.g, ink.b, 38)
+    bloom = ring * 1.16
+    surface.DrawTexturedRect(cx - bloom * 0.5, cy - bloom * 0.5,
+        bloom, bloom)
+end
+
 local function ensureRoot()
     if IsValid(root) then return end
     root = vgui.Create("DPanel")
@@ -184,36 +176,68 @@ local function ensureRoot()
     root:SetMouseInputEnabled(false)
     root:SetKeyboardInputEnabled(false)
     root:SetZPos(-80)
-    root.Paint = function() end
 
-    -- Draw after every portrait, on a full-screen transparent parent.
-    -- This lets the Roblox-style 5x death icon spin and shrink without
-    -- getting cut off at the individual portrait's rectangular bounds.
+    -- Paint once behind ALL portrait panels, so none of the glow/background
+    -- is cut short when the roster layout gets new child panels.
+    root.Paint = function()
+        for _, card in ipairs(cards) do
+            local cx, cy, ring = cardCircle(card)
+            if cx then
+                drawRingBackdrop(cx, cy, ring,
+                    card.danger and BAD or GOOD)
+            end
+        end
+    end
+
+    -- Paint AFTER every SpawnIcon panel. Unlike card.PaintOver, these
+    -- borders can never be obscured by a different player's later panel.
     root.PaintOver = function()
+        -- EXE uses ONLY the PNG artwork at 85% of the inner opening.
+        for _, card in ipairs(cards) do
+            local cx, cy, ring = cardCircle(card)
+            if cx and card.isEXE then
+                local iconSize = (ring / BORDER_SCALE) * EXE_ICON_SCALE
+                surface.SetMaterial(exeIcon)
+                surface.SetDrawColor(255, 255, 255, 255)
+                surface.DrawTexturedRect(
+                    cx - iconSize * 0.5, cy - iconSize * 0.5,
+                    iconSize, iconSize)
+            end
+        end
+
+        -- Render all the actual 1.638x borders together at their fixed
+        -- diameters. Player count and monster form only affect the color.
+        surface.SetMaterial(border)
+        for _, card in ipairs(cards) do
+            local cx, cy, ring = cardCircle(card)
+            if cx then
+                local ink = card.danger and BAD or GOOD
+                surface.SetDrawColor(ink.r, ink.g, ink.b, 255)
+                surface.DrawTexturedRect(
+                    cx - ring * 0.5, cy - ring * 0.5, ring, ring)
+            end
+        end
+
+        -- Death icons stay over the borders (including the unclipped 5x
+        -- beginning of their original animation).
         local now = RealTime()
         surface.SetMaterial(death)
         for _, card in ipairs(cards) do
-            if IsValid(card) and card:IsVisible() and card.dead
-                and card.deathStarted and card.ring then
-
+            local cx, cy, ring = cardCircle(card)
+            if cx and card.dead and card.deathStarted then
                 local elapsed = math.max(0, now - card.deathStarted)
                 local fade = math.Clamp(elapsed / DEATH_FADE_TIME, 0, 1)
                 local sizeT = sineInOut(elapsed / DEATH_SIZE_TIME)
                 local turnT = sineInOut(elapsed / DEATH_FADE_TIME)
-
-                local size = card.ring * Lerp(sizeT,
+                local size = ring * Lerp(sizeT,
                     DEATH_START_SIZE, DEATH_END_SIZE)
                 local rotation = Lerp(turnT, DEATH_START_ROTATION, 0)
                 local alpha = math.Round(DEATH_END_ALPHA * fade)
 
-                local x, y = card:GetPos()
-                local centerX = x + card:GetWide() * 0.5
-                local centerY = y + card.ring * 0.64
-
-                -- Pure red, not the ring's pink/red role tint.
+                -- Pure red, not the ring's role tint.
                 surface.SetDrawColor(255, 0, 0, alpha)
                 surface.DrawTexturedRectRotated(
-                    centerX, centerY, size, size, rotation)
+                    cx, cy, size, size, rotation)
             end
         end
     end
@@ -272,8 +296,9 @@ hook.Add("Think", "PC2_TopPlayerListUpdate", function()
     local count = math.min(#players, MAX_VISIBLE)
     local left = math.ceil(count / 2)
     local timerSize = math.Clamp(math.Round(sh * 0.12), 96, 156)
-    -- Keep the existing portrait size. Scale its border exactly as the
-    -- Roblox UDim2 (1.638, 0, 1.638, 0) would: relative to portrait.
+    -- Border diameter depends ONLY on screen height, never how many
+    -- players have joined or whether a card is EXE or a survivor.
+    -- Preserve the survivor size that was correct before this bug.
     local portraitSize = math.Round(timerSize * 0.86 * 0.62)
     local ring = portraitSize * BORDER_SCALE
 
