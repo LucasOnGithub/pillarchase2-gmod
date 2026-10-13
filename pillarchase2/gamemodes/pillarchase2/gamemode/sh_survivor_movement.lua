@@ -8,6 +8,11 @@ GM.SurvivorRunStuds = 23
 GM.SurvivorWalkSpeed = GM.SurvivorWalkStuds * UNITS_PER_STUD
 GM.SurvivorRunSpeed = GM.SurvivorRunStuds * UNITS_PER_STUD
 
+-- Garry's Mod only exposes the global GM while loading shared.lua.
+-- Capture it here: PlayerSpawn and console command callbacks run later,
+-- after GM can become nil (GAMEMODE is the runtime global).
+local movementGM = GM
+
 -- Unlike the original Roblox studs/s values, Source's movement pipeline
 -- can apply a global sv_maxspeed ceiling (often 320 units/s). Our requested
 -- 23 Roblox studs/s equals ~338 Source units/s, so make sure the server
@@ -16,7 +21,7 @@ local function ensureSourceSpeedCeiling()
     if not SERVER then return end
     local cap = GetConVar("sv_maxspeed")
     if not cap then return end
-    local required = math.ceil(GM.SurvivorRunSpeed)
+    local required = math.ceil(movementGM.SurvivorRunSpeed)
     if cap:GetFloat() < required then
         cap:SetFloat(required)
         print(string.format("[PC2 Movement] sv_maxspeed raised to %d "
@@ -278,8 +283,8 @@ concommand.Add("pc2_speed_debug", function(ply)
         "[PC2 Speed] %s walk=%.2f/%.2f run=%.2f/%.2f Source units/s; "
         .. "velocity=%.2f Roblox studs/s; stamina=%.0f; "
         .. "exhausted=%s brokenBone=%s sprintHeld=%s",
-        target:Nick(), target:GetWalkSpeed(), GM.SurvivorWalkSpeed,
-        target:GetRunSpeed(), GM.SurvivorRunSpeed, actualStuds,
+        target:Nick(), target:GetWalkSpeed(), movementGM.SurvivorWalkSpeed,
+        target:GetRunSpeed(), movementGM.SurvivorRunSpeed, actualStuds,
         target:GetNWFloat("PC2_Stamina", 100),
         tostring(target:GetNWBool("PC2_Exhausted", false)),
         tostring(target:GetNWBool("PC2_BrokenBone", false)),
