@@ -28,6 +28,8 @@ local introCamera = nil
 local introAngles = nil
 local lastMonster = nil
 local nextThink = 0
+local roundSerial = 0
+local monsterMorphed = false
 
 local function setMode(nextMode, seconds)
     mode = nextMode
@@ -60,8 +62,11 @@ end
 
 local function clearMonster(ply)
     if not IsValid(ply) then return end
-    -- This is the bundled Pill Pack's global server-side restore function.
-    if isfunction(restore) then restore(ply, true) end
+    -- Pill Pack uses module("pk_pills", package.seeall), so restore
+    -- belongs to pk_pills, NOT to the global gamemode environment.
+    if pk_pills and isfunction(pk_pills.restore) then
+        pk_pills.restore(ply, true)
+    end
     ply:SetNWBool("PC2_IsMonster", false)
     ply:SetNWString("PC2_MonsterForm", "")
     ply:SetNWEntity("PC2_ActiveMonsterPill", NULL)
@@ -240,6 +245,9 @@ local function finishRound(winner)
 end
 
 local function resetRound()
+    -- Invalidate delayed tip-phase callbacks from the cancelled round.
+    roundSerial = roundSerial + 1
+    monsterMorphed = false
     participants = {}
     monster = nil
     monsterStart, introCamera, introAngles = nil, nil, nil
@@ -265,6 +273,8 @@ local function startRound()
     if #possible == 0 then possible = all end
     monster = possible[math.random(#possible)]
     lastMonster = monster
+    roundSerial = roundSerial + 1
+    monsterMorphed = false
     participants = {}
     for _, ply in ipairs(all) do participants[ply] = true end
     local points = spawnPositions()
@@ -298,7 +308,9 @@ local function startRound()
         ply:SetNoDraw(false)
         ply:SetNotSolid(false)
         ply:SetNoTarget(false)
-        if isfunction(restore) then restore(ply, true) end
+        if pk_pills and isfunction(pk_pills.restore) then
+            pk_pills.restore(ply, true)
+        end
         ply:Spawn()
         ply:SetMaxHealth(100)
         ply:SetHealth(100)
@@ -307,18 +319,11 @@ local function startRound()
 
     monster:SetPos(monsterStart.pos)
     monster:SetEyeAngles(Angle(0, introAngles.y + 180, 0))
-    -- The first intro frame is black. Morphing happens under that fade.
-    -- Lock monster form for this life, so regular pk_pill_restore /
-    -- noclip inputs cannot leave a round without a monster. The lobby
-    -- reset intentionally calls restore(monster, true) to break the lock.
-    local form = isfunction(apply) and apply(monster, "pc2_exe", "lock-life")
-    if not IsValid(form) then
-        print("[PC2 Round] EXE pill could not be applied; returning to lobby.")
-        resetRound()
-        return
-    end
-    monster:Freeze(true)
-    monster:SetPos(monsterStart.pos)
+    -- Do NOT morph here. Until Faker is imported the intro is only
+    -- the empty camera staging, low sound, darkness and static-out.
+    -- Hiding the selected player's ordinary model prevents Dr. Kleiner
+    -- from being seen where the future Faker model will appear.
+    monster:SetNoDraw(true)
 
     setMode("Intro", INTRO_DURATION)
     net.Start("PC2_RoundIntroCamera")
@@ -330,28 +335,84 @@ end
 local function showTips()
     if mode ~= "Intro" then return end
     if not IsValid(monster) then finishRound("Survivors") return end
-    -- Everyone is behind a full-screen tip: teleport unseen.
-    monster:SetPos(monsterStart.pos)
-    monster:SetVelocity(-monster:GetVelocity())
-    monster:Freeze(true)
-    local survivorIndex = 0
-    for ply in pairs(participants) do
-        if IsValid(ply) and ply ~= monster then
-            survivorIndex = survivorIndex + 1
-            local spot = spawnChoices[survivorIndex]
-            if spot then
-                ply:SetPos(spot.pos)
-                ply:SetEyeAngles(spot.ang)
-            end
-            ply:SetVelocity(-ply:GetVelocity())
-            ply:Freeze(true)
-        end
-    end
-    setMode("Tips", TIPS_DURATION)
-end
 
+    -- Enter the opaque five-second tip screen FIRST. Allow that networked
+    -- phase change to reach clients before anything moves or morphs.
+    setMode("Tips", TIPS_DURATION)
+    local thisRound = roundSerial
+    timer.Simple(0.35, function()
+        if mode ~= "Tips" or thisRound ~= roundSerial
+            or not IsValid(monster) or not participants[monster] then return end
+
+        -- This is the module's actual API (not a global apply function).
+        -- Mode lock-life prevents a player unmorphing in the middle of play.
+        if not pk_pills or not isfunction(pk_pills.apply)
+            or not isfunction(pk_pills.getPillTable)
+            or not pk_pills.getPillTable("pc2_exe") then
+            print("[PC2 Round] EXE form is not registered in pk_pills; "
+                .. "verify pc2_pills/init.lua ran on the server.")
+            resetRound()
+            return
+        end
+        if not monster:Alive() then
+            print("[PC2 Round] Chosen EXE is not alive during tips.")
+            resetRound()
+            return
+        end
+
+        local success, result = pcall(pk_pills.apply,
+            monster, "pc2_exe", "lock-life")
+        local mapped = isfunction(pk_pills.getMappedEnt)
+            and pk_pills.getMappedEnt(monster) or nil
+        if not success or not IsValid(result)
+            or not IsValid(mapped) or mapped:GetPillForm() ~= "pc2_exe" then
+            print("[PC2 Round] EXE morph failed during tips. "
+                .. "Pill Pack returned: " .. tostring(result)
+                .. "; success=" .. tostring(success)
+                .. "; mapped=" .. tostring(mapped))
+            resetRound()
+            return
+        end
+
+        monsterMorphed = true
+        -- Morph finished while the tip is still hiding the world.
+        monster:SetNoDraw(false)
+        monster:SetPos(monsterStart.pos)
+        monster:SetVelocity(-monster:GetVelocity())
+        monster:Freeze(true)
+
+        -- Teleport survivors only after the dark tip is up. Spawn choices
+        -- are already random and no closer than 950 units to EXE.
+        local survivorIndex = 0
+        for ply in pairs(participants) do
+            if IsValid(ply) and ply ~= monster then
+                survivorIndex = survivorIndex + 1
+                local spot = spawnChoices[survivorIndex]
+                if spot then
+                    ply:SetPos(spot.pos)
+                    ply:SetEyeAngles(spot.ang)
+                end
+                ply:SetVelocity(-ply:GetVelocity())
+                ply:Freeze(true)
+            end
+        end
+        print("[PC2 Round] EXE morphed successfully under tips.")
+    end)
+end
 local function roleReveal()
     if mode ~= "Tips" then return end
+    -- Never reveal or unfreeze players unless the pill exists. This
+    -- also catches unexpectedly removed EXE entities during tips.
+    local pill = IsValid(monster) and pk_pills
+        and isfunction(pk_pills.getMappedEnt)
+        and pk_pills.getMappedEnt(monster)
+    if not monsterMorphed or not IsValid(pill)
+        or pill:GetPillForm() ~= "pc2_exe" then
+        print("[PC2 Round] EXE was not ready when tips ended; "
+            .. "aborting round instead of starting without a monster.")
+        resetRound()
+        return
+    end
     setMode("Reveal", REVEAL_DURATION)
 end
 
