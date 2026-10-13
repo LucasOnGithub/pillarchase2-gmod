@@ -826,8 +826,11 @@ if SERVER then
 
                 if now >= (ent.PC2_EXESniffStart or 0) then
                     ent.PC2_EXESniffStart = now + 12
-                    ent:SetNWFloat("PC2_EXE_SniffUntil", now + 2)
-                    ply:SetNWFloat("PC2_EXE_SniffUntil", now + 2)
+                    -- Toybox ESP uses a 1.2-second reveal every 12 seconds.
+                    -- Mirror the ping deadline on the owner so it works
+                    -- even before the pill entity is networked to them.
+                    ent:SetNWFloat("PC2_EXE_SniffUntil", now + 1.2)
+                    ply:SetNWFloat("PC2_EXE_SniffUntil", now + 1.2)
                     ent:PillSound("sniff")
                 end
             elseif ply:GetNWString("PC2_MonsterForm", "") == ID
@@ -1016,20 +1019,104 @@ else
         end
     end)
 
+    -- Toybox EXE ESP:
+    --   every 12 seconds (timed by the existing server sniff pulse),
+    --   sample targets within 1544 Source units of EXE's puppet,
+    --   red wall-visible halo with 0.1s fade-in + 1.1s fade-out,
+    --   and a yellow halo on players held by Thorny Grave.
+    -- Only the LOCAL EXE sees these effects.
+    local ESP_RANGE = 1544
+    local ESP_DURATION = 1.2
+    local ESP_FADE_IN = 0.1
+    local espMarks = {}
+    local lastSniffDeadline = 0
+
+    local function espTarget(ply, target)
+        if not enemy(ply, target) then return false end
+        local cls = target:GetClass()
+        if cls == "pill_puppet" or cls == "pill_ent_phys"
+            or cls == "pill_ent_costume" then return false end
+        if target:IsPlayer() then
+            -- Don't reveal dead spectators or players in other pill forms.
+            if target:GetNWBool("PC2_Eliminated", false)
+                or target:GetNWString("PC2_RoundRole", "") == "Spectator" then
+                return false
+            end
+            if pk_pills and pk_pills.getMappedEnt
+                and IsValid(pk_pills.getMappedEnt(target)) then return false end
+        end
+        return true
+    end
+
     hook.Add("PreDrawHalos", "PC2_EXESniffHalo", function()
         local ply = LocalPlayer()
-        if not IsValid(ply) then return end
-        local pill = clientEXEPill(ply)
-        if not isEXEHUDOwner(ply, pill)
-            or CurTime() >= hudFloat(ply, pill, "PC2_EXE_SniffUntil") then
+        if not IsValid(ply) or not ply:Alive() then
+            espMarks = {}
+            lastSniffDeadline = 0
             return
         end
-        local marked = {}
-        for _, ent in ipairs(ents.GetAll()) do
-            if enemy(ply, ent) then marked[#marked + 1] = ent end
+        local pill = clientEXEPill(ply)
+        if not isEXEHUDOwner(ply, pill) then
+            espMarks = {}
+            lastSniffDeadline = 0
+            return
         end
-        if #marked > 0 then
-            halo.Add(marked, Color(255, 0, 0), 10, 10, 5, true, true)
+
+        local now = CurTime()
+        local deadline = hudFloat(ply, pill, "PC2_EXE_SniffUntil")
+        -- Scan only ONCE per sniff pulse. Targets outside the range at
+        -- that instant are not ESP-marked, even if they move closer.
+        -- Existing marks are not recalculated by position every frame.
+        if deadline > now and deadline ~= lastSniffDeadline then
+            lastSniffDeadline = deadline
+            espMarks = {}
+            local puppet = IsValid(pill) and pill.GetPuppet
+                and pill:GetPuppet() or nil
+            local origin = IsValid(puppet) and puppet:GetPos() or ply:GetPos()
+            for _, target in ipairs(ents.FindInSphere(origin, ESP_RANGE)) do
+                if espTarget(ply, target) then
+                    espMarks[target] = {start = now, endt = now + ESP_DURATION}
+                end
+            end
+        end
+
+        for target, mark in pairs(espMarks) do
+            if not IsValid(target) or not espTarget(ply, target)
+                or mark.endt <= now then
+                espMarks[target] = nil
+            else
+                local t = math.Clamp(now - mark.start, 0, ESP_DURATION)
+                local fade
+                if t <= ESP_FADE_IN then
+                    fade = t / ESP_FADE_IN
+                else
+                    fade = 1 - (t - ESP_FADE_IN)
+                        / (ESP_DURATION - ESP_FADE_IN)
+                end
+                fade = math.Clamp(fade, 0, 1)
+                if fade > 0.02 then
+                    -- Same Toybox blur/passes falloff, including through-wall
+                    -- visibility (ignoreZ=true, additive=true).
+                    local blur = math.max(1, math.floor(5 * fade))
+                    local passes = math.max(1, math.floor(50 * fade))
+                    halo.Add({target}, Color(255, 0, 0),
+                        blur, blur, passes, true, true)
+                end
+            end
+        end
+
+        -- Like Toybox's EXE_IsTrapped yellow halo, the trap marker stays
+        -- visible for as long as the current EXE's Thorny Grave holds them,
+        -- even between periodic red ESP pulses.
+        for _, target in ipairs(player.GetAll()) do
+            if espTarget(ply, target) then
+                local trap = target:GetNWEntity("PC2_TrapHolding")
+                if IsValid(trap)
+                    and trap:GetNWEntity("PC2_EXEOwner") == ply then
+                    halo.Add({target}, Color(255, 255, 0),
+                        4, 4, 2, true, true)
+                end
+            end
         end
     end)
 end
