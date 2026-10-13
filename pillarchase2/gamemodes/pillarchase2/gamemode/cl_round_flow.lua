@@ -13,8 +13,18 @@ local mouseX, mouseY = 0, 0
 local orbit = Angle(8, 0, 0)
 local spectateTarget
 local stageFontsH = 0
-local noiseLast = 0
-local noise = {}
+-- Exact static textures imported from the original intro UI.
+-- The "FirstStatic" and "StaticUI" layers each contain two noise
+-- frames. Alternate the actual PNG frames; do not synthesize stripes.
+local firstStaticFrames = {
+    Material("Map/Intro/FirstStatic1.png", "smooth"),
+    Material("Map/Intro/FirstStatic2.png", "smooth")
+}
+local staticUIFrames = {
+    Material("Map/Intro/StaticUI1.png", "smooth"),
+    Material("Map/Intro/StaticUI2.png", "smooth")
+}
+local missingStaticReported = false
 
 -- The Roblox original chooses a random ImageLabel under
 -- LobbyGUI.Tips.EXE, then fades it and its TextLabel descendants.
@@ -216,25 +226,23 @@ local function progress()
     return math.Clamp((CurTime() - began) / duration, 0, 1)
 end
 
-local function staticEffect(amp)
-    if CurTime() > noiseLast then
-        noiseLast = CurTime() + 0.055
-        noise = {}
-        for i = 1, 70 do
-            noise[i] = {
-                x = math.Rand(0, 1), y = math.Rand(0, 1),
-                w = math.Rand(0.03, 0.4), h = math.Rand(1, 8),
-                alpha = math.random(55, 195)
-            }
+local function drawImportedStatic(frames, alpha)
+    if alpha <= 0 then return end
+    -- Alternate the source image frames at 20 Hz. FirstStatic starts
+    -- faint (Roblox ImageTransparency = 0.68); StaticUI takes over for
+    -- the strong static-out at the end of the intro.
+    local frame = frames[(math.floor(RealTime() * 20) % #frames) + 1]
+    if frame:IsError() then
+        if not missingStaticReported then
+            missingStaticReported = true
+            print("[PC2 Intro] Missing original static materials under "
+                .. "materials/Map/Intro (FirstStatic1/2, StaticUI1/2).")
         end
+        return
     end
-    surface.SetDrawColor(0, 0, 0, 120 * amp)
-    surface.DrawRect(0, 0, ScrW(), ScrH())
-    for _, stripe in ipairs(noise) do
-        surface.SetDrawColor(235, 239, 248, stripe.alpha * amp)
-        surface.DrawRect(stripe.x * ScrW(), stripe.y * ScrH(),
-            stripe.w * ScrW(), stripe.h)
-    end
+    surface.SetMaterial(frame)
+    surface.SetDrawColor(255, 255, 255, math.Clamp(alpha, 0, 255))
+    surface.DrawTexturedRect(0, 0, ScrW(), ScrH())
 end
 
 local function onPhaseChange(nextMode)
@@ -368,10 +376,15 @@ hook.Add("HUDPaint", "PC2_RoundSequenceScreen", function()
         elseif t > 0.83 then
             shade(255 * math.Clamp((t - 0.83) / 0.17, 0, 1))
         end
-        -- Original Faker animation is intentionally omitted until imported:
-        -- low intro sound, the EXE camera, and a two-stage static-out.
-        if t >= 0.46 and t < 0.9 then
-            staticEffect(math.min(1, (t - 0.46) * 8))
+        -- The original Roblox intro fades in FirstStatic after its first
+        -- beat (ImageTransparency -> 0.68), then enables StaticUI for the
+        -- static-out. Use ONLY the imported image frames in Map/Intro.
+        if t >= 0.2 and t < 0.56 then
+            drawImportedStatic(firstStaticFrames,
+                82 * math.Clamp((t - 0.2) / 0.2, 0, 1))
+        elseif t >= 0.56 and t < 0.94 then
+            drawImportedStatic(staticUIFrames,
+                255 * math.Clamp((t - 0.56) / 0.08, 0, 1))
         end
     elseif state == "Tips" and participant(LocalPlayer()) then
         -- Solid black backing hides the delayed EXE morph and teleport.

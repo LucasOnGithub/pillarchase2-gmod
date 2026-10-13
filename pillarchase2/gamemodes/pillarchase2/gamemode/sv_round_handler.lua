@@ -9,7 +9,9 @@ local INTRO_DURATION = 4.0
 local TIPS_DURATION = 5.0
 local REVEAL_DURATION = 3.3
 local END_DURATION = 5.0
-local MIN_SPAWN_GAP = 950 -- Source units; prefer this, maximize if map is small
+-- Prefer up to 950 Source units between EXE and other MAP spawn points.
+local MAX_SPAWN_SEPARATION = 950
+local MIN_SPAWN_SEPARATION = 400
 local ROUND_BASE = 180
 local ROUND_PER_EXTRA_PLAYER = 30
 local ROUND_MAX = 480
@@ -104,65 +106,70 @@ local function spectator(ply)
     ply:Spectate(OBS_MODE_ROAMING)
 end
 
+-- Only actual BSP player spawn entities are legal. Never manufacture
+-- locations from random traces: those can be outside the playable map.
+local MAP_SPAWN_CLASSES = {
+    "info_player_start", "info_player_deathmatch",
+    "info_player_counterterrorist", "info_player_terrorist",
+    "info_player_rebel", "info_player_combine",
+    "info_player_teamspawn", "gmod_player_start", "pc2_spawn"
+}
+
 local function spawnPositions()
     local points, seen = {}, {}
-    for _, class in ipairs({
-        "info_player_start", "info_player_deathmatch", "info_player_counterterrorist",
-        "info_player_terrorist", "info_player_rebel", "info_player_combine",
-        "info_player_teamspawn", "gmod_player_start", "pc2_spawn"
-    }) do
-        for _, spot in ipairs(ents.FindByClass(class)) do
+    for _, className in ipairs(MAP_SPAWN_CLASSES) do
+        for _, spot in ipairs(ents.FindByClass(className)) do
             local pos = spot:GetPos() + Vector(0, 0, 5)
-            local key = math.floor(pos.x / 32) .. ":" .. math.floor(pos.y / 32)
-            if not seen[key] then
-                seen[key] = true
-                points[#points + 1] = {pos = pos, ang = spot:GetAngles()}
-            end
-        end
-    end
-
-    -- No specialized map is required. Generate additional walkable,
-    -- unobstructed ground locations if a normal Sandbox map has only
-    -- one player start. This is also what gives us EXE-separated spawns.
-    local seeds = table.Copy(points)
-    if #seeds == 0 then
-        for _, ply in ipairs(player.GetAll()) do
-            if IsValid(ply) then
-                seeds[#seeds + 1] = {pos = ply:GetPos(), ang = Angle(0, 0, 0)}
-            end
-        end
-    end
-    for _ = 1, 80 do
-        if #seeds == 0 then break end
-        local seed = seeds[math.random(#seeds)]
-        local theta = math.Rand(0, math.pi * 2)
-        local distance = math.Rand(360, 2400)
-        local delta = Vector(math.cos(theta) * distance, math.sin(theta) * distance, 0)
-        local top = seed.pos + delta + Vector(0, 0, 300)
-        local down = util.TraceLine({
-            start = top, endpos = top - Vector(0, 0, 920),
-            mask = MASK_PLAYERSOLID_BRUSHONLY
-        })
-        if down.Hit and not down.HitSky and down.HitNormal.z > 0.65 then
-            local point = down.HitPos + Vector(0, 0, 6)
-            local hull = util.TraceHull({
-                start = point, endpos = point,
-                mins = Vector(-24, -24, 0), maxs = Vector(24, 24, 90),
-                mask = MASK_PLAYERSOLID
-            })
-            if not hull.StartSolid and not hull.AllSolid
-                and util.IsInWorld(point + Vector(0, 0, 36)) then
-                local key = math.floor(point.x / 90) .. ":" .. math.floor(point.y / 90)
-                if not seen[key] then
+            local key = math.floor(pos.x / 24) .. ":" ..
+                math.floor(pos.y / 24) .. ":" .. math.floor(pos.z / 24)
+            if not seen[key] and util.IsInWorld(pos + Vector(0, 0, 36)) then
+                local tr = util.TraceHull({
+                    start = pos, endpos = pos,
+                    mins = Vector(-16, -16, 0),
+                    maxs = Vector(16, 16, 72),
+                    -- Don't reject a map spawn if a lobby player occupies it.
+                    mask = MASK_PLAYERSOLID_BRUSHONLY
+                })
+                if not tr.StartSolid and not tr.AllSolid then
                     seen[key] = true
                     points[#points + 1] = {
-                        pos = point, ang = Angle(0, math.Rand(-180, 180), 0)
+                        pos = pos, ang = spot:GetAngles(),
+                        className = className
                     }
                 end
             end
         end
     end
     return points
+end
+
+-- Diagnostics for validating the BSP's true player spawn entities.
+concommand.Add("pc2_round_spawns", function(ply)
+    if IsValid(ply) and not ply:IsAdmin() then return end
+    local points = spawnPositions()
+    local function report(msg)
+        print(msg)
+        if IsValid(ply) then ply:PrintMessage(HUD_PRINTCONSOLE, msg) end
+    end
+    report(string.format("[PC2 Round] %s: %d usable map spawns",
+        game.GetMap(), #points))
+    for i, point in ipairs(points) do
+        report(string.format("  #%d %s: (%.0f, %.0f, %.0f)", i,
+            point.className, point.pos.x, point.pos.y, point.pos.z))
+    end
+end)
+
+local function mapSeparation(points)
+    local farthest = 0
+    for i = 1, #points do
+        for j = i + 1, #points do
+            farthest = math.max(farthest,
+                points[i].pos:DistToSqr(points[j].pos))
+        end
+    end
+    local spread = math.sqrt(farthest)
+    return math.min(MAX_SPAWN_SEPARATION,
+        math.max(MIN_SPAWN_SEPARATION, spread * 0.6)), spread
 end
 
 -- Look for a place where the camera can stand well away from EXE.
@@ -191,46 +198,58 @@ local function cameraAt(point)
     return bestPos, bestAng, bestSpace
 end
 
-local function selectSpawnPoint(points)
-    local best, camPos, camAng, score = nil, nil, nil, -1
+-- A valid EXE spawn must have room for its cinematic camera AND enough
+-- distant, real map spawn entities for every survivor.
+local function selectSpawnPoint(points, survivorCount, minGap)
+    local best, cameraPos, cameraAng, bestScore
     for _, spot in ipairs(points) do
-        local c, a, d = cameraAt(spot)
-        if c and d and d >= 160 and d > score then
-            best, camPos, camAng, score = spot, c, a, d
+        local far = 0
+        for _, other in ipairs(points) do
+            if other ~= spot and spot.pos:DistToSqr(other.pos) >= minGap * minGap then
+                far = far + 1
+            end
+        end
+        if far >= survivorCount then
+            local camPos, camAng, clearance = cameraAt(spot)
+            if camPos and clearance >= 160 then
+                local score = clearance + math.Rand(0, 55)
+                if not bestScore or score > bestScore then
+                    best, cameraPos, cameraAng, bestScore =
+                        spot, camPos, camAng, score
+                end
+            end
         end
     end
-    return best, camPos, camAng
+    return best, cameraPos, cameraAng
 end
 
-local function selectSurvivorSpawns(points, origin, amount)
-    -- Never reuse EXE's spawn or put survivors within 950 units of it.
-    -- Choose randomly from the valid pool, favouring separated survivors.
-    local eligibleSpawns = {}
+local function selectSurvivorSpawns(points, origin, amount, minGap)
+    local available = {}
     for _, spot in ipairs(points) do
-        if spot.pos:DistToSqr(origin) >= MIN_SPAWN_GAP * MIN_SPAWN_GAP then
-            eligibleSpawns[#eligibleSpawns + 1] = spot
+        if spot.pos:DistToSqr(origin) >= minGap * minGap then
+            available[#available + 1] = spot
         end
     end
-    if #eligibleSpawns < amount then return {} end
-    local result = {}
+    if #available < amount then return {} end
+    local selected = {}
     for _ = 1, amount do
         local separated = {}
-        for _, spot in ipairs(eligibleSpawns) do
-            local okay = true
-            for _, taken in ipairs(result) do
-                if spot.pos:DistToSqr(taken.pos) < 300 * 300 then
-                    okay = false
+        for _, candidate in ipairs(available) do
+            local distant = true
+            for _, existing in ipairs(selected) do
+                if candidate.pos:DistToSqr(existing.pos) < 300 * 300 then
+                    distant = false
                     break
                 end
             end
-            if okay then separated[#separated + 1] = spot end
+            if distant then separated[#separated + 1] = candidate end
         end
-        if #separated == 0 then separated = eligibleSpawns end
-        local choice = separated[math.random(#separated)]
-        result[#result + 1] = choice
-        table.RemoveByValue(eligibleSpawns, choice)
+        if #separated == 0 then separated = available end
+        local chosen = separated[math.random(#separated)]
+        selected[#selected + 1] = chosen
+        table.RemoveByValue(available, chosen)
     end
-    return result
+    return selected
 end
 
 local function finishRound(winner)
@@ -278,20 +297,37 @@ local function startRound()
     participants = {}
     for _, ply in ipairs(all) do participants[ply] = true end
     local points = spawnPositions()
-    if #points == 0 then
-        print("[PC2 Round] No spawn points found. Cannot safely start a round.")
+    if #points < #all then
+        print(string.format("[PC2 Round] %s has %d valid map spawn entities "
+            .. "for %d players. Need one unique map spawn per player; "
+            .. "will not generate off-map positions. Run pc2_round_spawns.",
+            game.GetMap(), #points, #all))
         resetRound()
         return
     end
-    monsterStart, introCamera, introAngles = selectSpawnPoint(points)
-    if not monsterStart or not introCamera then resetRound() return end
-    spawnChoices = selectSurvivorSpawns(points, monsterStart.pos, #all - 1)
+
+    local minGap, mapSpread = mapSeparation(points)
+    monsterStart, introCamera, introAngles =
+        selectSpawnPoint(points, #all - 1, minGap)
+    if not monsterStart or not introCamera then
+        print(string.format("[PC2 Round] %s: no camera-safe EXE spawn "
+            .. "with %d other map spawns at least %.0f units away "
+            .. "(max map spawn separation %.0f). Run pc2_round_spawns.",
+            game.GetMap(), #all - 1, minGap, mapSpread))
+        resetRound()
+        return
+    end
+    spawnChoices = selectSurvivorSpawns(points,
+        monsterStart.pos, #all - 1, minGap)
     if #spawnChoices < #all - 1 then
-        print("[PC2 Round] Map lacks enough clear spawn points at least "
-            .. MIN_SPAWN_GAP .. " units from EXE; round cancelled.")
+        print("[PC2 Round] Not enough distant MAP spawn entities; round cancelled.")
         resetRound()
         return
     end
+    print(string.format("[PC2 Round] EXE map spawn: %s (%.0f %.0f %.0f). "
+        .. "Survivor map spawn count: %d; minimum distance: %.0f.",
+        monsterStart.className, monsterStart.pos.x, monsterStart.pos.y,
+        monsterStart.pos.z, #spawnChoices, minGap))
 
     local duration = math.min(ROUND_BASE + math.max(0, #all - 2)
         * ROUND_PER_EXTRA_PLAYER, ROUND_MAX)
@@ -381,8 +417,8 @@ local function showTips()
         monster:SetVelocity(-monster:GetVelocity())
         monster:Freeze(true)
 
-        -- Teleport survivors only after the dark tip is up. Spawn choices
-        -- are already random and no closer than 950 units to EXE.
+        -- Teleport survivors only after the tip is up. All spawn choices
+        -- are real map player-start entities away from EXE.
         local survivorIndex = 0
         for ply in pairs(participants) do
             if IsValid(ply) and ply ~= monster then
