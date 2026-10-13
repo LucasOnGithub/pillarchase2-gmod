@@ -1,7 +1,7 @@
 "VertexlitGeneric"
 {
-    "$basetexture" "models/noodles/pillarchase2/exev2/teeth_d"
-    // Teeth texture has no normal-map VTF; let Source use its vertex normals.
+    "$basetexture" "models/noodles/pillarchase2/exev2/teeth_D"
+    "$bumpmap" "models/noodles/pillarchase2/shared/snow_normal"
     "$nodecal" "1"
     "$phong" "1"
     "$phongboost"    "1"
@@ -10,8 +10,13 @@
     "$phongdisablehalflambert"    "1"
     "$color2" "[0.8 0.8 0.8]"
 
+    "$detail " "models/noodles/pillarchase2/shared/snow_detail"
+    "$detailscale" "2"
+    "$detailblendfactor" "1"
+    "$detailblendmode" "0"
 
     "$envmap" "env_cubemap"
+    "$normalmapalphaenvmapmask"        "1"
     "$envmapfresnel"    "1"
 
     "$envmaptint"        0
