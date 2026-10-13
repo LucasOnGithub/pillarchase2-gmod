@@ -440,9 +440,11 @@ hook.Add("HUDPaint", "PC2_RoundSequenceScreen", function()
     local green = Color(93, 248, 122)
 
     if state == "Waiting" then
-        centerLine("WAITING FOR PLAYERS", "PC2_RoundHeadline", x, y, white)
-        centerLine("At least 2 players are needed to start intermission.",
-            "PC2_RoundSmall", x, y + 52, gray)
+        -- Show the normal Intermission artwork and its 01:00 clock while
+        -- waiting for the required two players. Do not read the global
+        -- timer here: the server holds it at 0 in the Waiting phase.
+        -- The actual countdown begins only when Intermission starts.
+        drawIntermissionHUD(sw, 60)
     elseif state == "Intermission" then
         local remaining = math.ceil(math.max(
             GetGlobalInt("PC2_TimerSeconds", 60), 0))
