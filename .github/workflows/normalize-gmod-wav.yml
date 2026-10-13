@@ -1,15 +1,12 @@
 name: Normalize Garry's Mod WAV audio
 
 on:
-  # Adding this workflow to main runs it immediately. Further incompatible
-  # WAV imports are normalized by the same workflow on subsequent pushes.
+  # One-time cleanup run. The final step removes this workflow from main.
   push:
     branches:
       - main
     paths:
       - '.github/workflows/normalize-gmod-wav.yml'
-      - 'pillarchase2/gamemodes/pillarchase2/content/sound/**/*.wav'
-  workflow_dispatch:
 
 permissions:
   contents: write
@@ -119,4 +116,18 @@ jobs:
             exit 0
           fi
           git commit -m "Convert incompatible PC2 WAVs to 44.1 kHz PCM [skip ci]"
+          git push origin HEAD:main
+
+      - name: Remove one-time GitHub Actions workflow from main
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Fetch the current branch first; the previous step may have
+          # pushed a new WAV commit using the GitHub Actions bot token.
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin main
+          git checkout -B main origin/main
+          git rm -- .github/workflows/normalize-gmod-wav.yml
+          git commit -m "Remove one-time WAV conversion workflow [skip ci]"
           git push origin HEAD:main
