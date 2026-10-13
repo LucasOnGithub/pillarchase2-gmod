@@ -5,10 +5,14 @@ if SERVER then return end
 local ASSETS = "Server/RoundHandler/GameGui/Top/PlrList/Plr/"
 local border = Material(ASSETS .. "Border.png", "smooth")
 local death = Material(ASSETS .. "Death.png", "smooth")
+-- Monsters use a supplied 2D portrait, never a rendered SpawnIcon.
+local exeIcon = Material(
+    "Server/RoundHandler/GameGui/NewStats/SelfIcon/Renders/EXEIcon.png",
+    "smooth"
+)
 
 local GOOD = Color(91, 246, 102)
 local BAD = Color(250, 76, 104)
-local MODEL_EXE = "models/noodles/pillarchase2/exe.mdl"
 local MAX_VISIBLE = 10
 
 local root, cards = nil, {}
@@ -50,6 +54,16 @@ local function createCard()
         surface.SetDrawColor(color.r, color.g, color.b, 38)
         bloom = ring * 1.16
         surface.DrawTexturedRect(cx - bloom / 2, cy - bloom / 2, bloom, bloom)
+
+        -- Draw EXE's original 2D UI portrait INSIDE the border opening.
+        -- This never renders the monster model or generates a SpawnIcon.
+        if self.isEXE then
+            local hole = ring * 0.62
+            surface.SetMaterial(exeIcon)
+            surface.SetDrawColor(255, 255, 255, 255)
+            surface.DrawTexturedRect(cx - hole * 0.5, cy - hole * 0.5,
+                hole, hole)
+        end
     end
 
     card.PaintOver = function(self, w, h)
@@ -77,19 +91,23 @@ local function createCard()
     return card
 end
 
-local function portraitModel(ply)
-    if ply:GetNWString("PC2_MonsterForm", "") == "pc2_exe" then
-        return MODEL_EXE
-    end
-    return ply:GetModel()
-end
-
 local function updateCard(card, ply)
     card.player = ply
     card.dead = not ply:Alive()
-    card.danger = card.dead or ply:GetNWBool("PC2_IsMonster", false)
-    -- Use the exact thumbnail system from Sandbox's player model selector.
-    setPortraitModel(card, portraitModel(ply))
+
+    local monsterForm = ply:GetNWString("PC2_MonsterForm", "")
+    local isMonster = ply:GetNWBool("PC2_IsMonster", false)
+        or monsterForm ~= ""
+    card.danger = card.dead or isMonster
+    card.isEXE = isMonster and monsterForm == "pc2_exe"
+
+    -- No model preview/viewport is used for monsters. Currently EXE has
+    -- an artwork icon; future monsters can supply their own render images.
+    -- Survivors retain the static Sandbox model-selector thumbnails.
+    card.avatar:SetVisible(not isMonster)
+    if not isMonster then
+        setPortraitModel(card, ply:GetModel())
+    end
 end
 
 local function layoutCard(card, index, side, numLeft, ring, timerSize)
@@ -165,7 +183,7 @@ hook.Add("Think", "PC2_TopPlayerListUpdate", function()
     if lastW ~= sw or lastH ~= sh then
         root:SetSize(sw, math.max(150, math.Round(sh * 0.23)))
         root:SetPos(0, 0)
-            lastW, lastH = sw, sh
+        lastW, lastH = sw, sh
     end
 
     local players = roster()
