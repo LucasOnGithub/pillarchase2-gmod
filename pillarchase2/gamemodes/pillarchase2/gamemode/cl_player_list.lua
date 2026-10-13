@@ -27,11 +27,9 @@ local MAX_VISIBLE = 10
 -- Roblox UDim2.new(1.638, 0, 1.638, 0): each border is exactly
 -- 1.638 times the portrait's width AND height (zero pixel offsets).
 local BORDER_SCALE = 1.638
--- The EXE PNG is a full uncropped square, unlike the tightly framed
--- Sandbox player thumbnails. Crop its center by the SAME 1.638 factor
--- so switching to EXE doesn't make the visible face appear to shrink.
--- This changes artwork framing, NOT the survivor's correct border size.
-local EXE_PORTRAIT_ZOOM = 1.638
+-- Scale only EXE's picture inside its border, not the border itself.
+-- No center-crop zoom: show the entire supplied EXEIcon.png image.
+local EXE_ICON_SCALE = 0.85
 
 local root, cards = nil, {}
 local nextRoster = 0
@@ -105,18 +103,16 @@ local function createCard()
         bloom = ring * 1.16
         surface.DrawTexturedRect(cx - bloom / 2, cy - bloom / 2, bloom, bloom)
 
-        -- Match the apparent size of the Sandbox survivor model thumbnail.
-        -- Keep the same square inside the unchanged 1.638x border, but
-        -- zoom the EXE artwork with texture coordinates so none of it
-        -- spills outside the ring. EXE is still a static PNG, no viewport.
+        -- EXE uses a flat PNG centered inside the ring, at 85% of the
+        -- same portrait opening. Survivor thumbnails and 1.638x borders
+        -- are unchanged, including when the player switches roles.
         if self.isEXE then
-            local hole = ring / BORDER_SCALE
-            local crop = (1 - 1 / EXE_PORTRAIT_ZOOM) * 0.5
+            local iconSize = (ring / BORDER_SCALE) * EXE_ICON_SCALE
             surface.SetMaterial(exeIcon)
             surface.SetDrawColor(255, 255, 255, 255)
-            surface.DrawTexturedRectUV(
-                cx - hole * 0.5, cy - hole * 0.5,
-                hole, hole, crop, crop, 1 - crop, 1 - crop)
+            surface.DrawTexturedRect(
+                cx - iconSize * 0.5, cy - iconSize * 0.5,
+                iconSize, iconSize)
         end
     end
 
