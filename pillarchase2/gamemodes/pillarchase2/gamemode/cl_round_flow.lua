@@ -13,6 +13,19 @@ local mouseX, mouseY = 0, 0
 local orbit = Angle(8, 0, 0)
 local spectateTarget
 local stageFontsH = 0
+
+-- Copied from the supplied pc2_lobby_cl.lua intermission HUD.
+-- The materials belong under content/materials/pc2hud/ on the client.
+-- Keep the existing round-phase globals instead of registering the old
+-- PC2_LobbyState net receiver (which this gamemode does not send).
+local intermissionTimerMat = Material("pc2hud/timer.png", "smooth")
+local intermissionLabelMat = Material("pc2hud/font/intermission.png", "smooth")
+local intermissionLastSecond
+local intermissionPulse = 0
+local intermissionPulseSpeed = 5
+local intermissionPulseAmount = 0.08
+local warnedIntermissionMaterials = false
+
 -- Exact static textures imported from the original intro UI.
 -- The "FirstStatic" and "StaticUI" layers each contain two noise
 -- frames. Alternate the actual PNG frames; do not synthesize stripes.
@@ -222,6 +235,63 @@ local function shade(alpha)
     surface.DrawRect(0, 0, ScrW(), ScrH())
 end
 
+-- Original pc2_lobby_cl.lua intermission layout, animation and text.
+-- HUDPaint reads the authoritative server's PC2_TimerSeconds rather
+-- than maintaining a second countdown via a separate net message.
+local function drawIntermissionHUD(scrW, remaining)
+    if remaining ~= intermissionLastSecond then
+        intermissionLastSecond = remaining
+        intermissionPulse = intermissionPulseAmount
+    else
+        intermissionPulse = Lerp(
+            math.Clamp(FrameTime() * intermissionPulseSpeed, 0, 1),
+            intermissionPulse, 0)
+    end
+
+    local baseBoxWidth, baseBoxHeight = 200, 50
+    local topY = 50
+    local scale = 1 + intermissionPulse
+    local boxWidth = baseBoxWidth * scale
+    local boxHeight = baseBoxHeight * scale
+    local boxX = (scrW - boxWidth) * 0.5
+    local boxY = topY - (boxHeight - baseBoxHeight) * 0.5
+
+    local labelWidth, labelHeight = 160, 28
+    local labelX = (scrW - labelWidth) * 0.5
+    local labelY = boxY - labelHeight - 4
+
+    surface.SetDrawColor(255, 255, 255, 255)
+    if not intermissionTimerMat:IsError() then
+        surface.SetMaterial(intermissionTimerMat)
+        surface.DrawTexturedRect(boxX, boxY, boxWidth, boxHeight)
+    end
+    if not intermissionLabelMat:IsError() then
+        surface.SetMaterial(intermissionLabelMat)
+        surface.DrawTexturedRect(labelX, labelY, labelWidth, labelHeight)
+    else
+        -- No substitute image: text remains readable until the user
+        -- commits the original pc2hud images to the repository.
+        draw.SimpleText("INTERMISSION", "Trebuchet24", scrW * 0.5,
+            labelY + labelHeight * 0.5, Color(255, 255, 255, 255),
+            TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+    end
+
+    if not warnedIntermissionMaterials
+        and (intermissionTimerMat:IsError() or intermissionLabelMat:IsError()) then
+        warnedIntermissionMaterials = true
+        print("[PC2 Intermission] Expected original materials at "
+            .. "materials/pc2hud/timer.png and "
+            .. "materials/pc2hud/font/intermission.png")
+    end
+
+    local timeText = string.format("%02d:%02d",
+        math.floor(remaining / 60), remaining % 60)
+    draw.SimpleText(timeText, "Trebuchet24",
+        scrW * 0.5, boxY + boxHeight * 0.5,
+        Color(255, 255, 255, 255),
+        TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+end
+
 local function progress()
     local began = GetGlobalFloat("PC2_PhaseStart", 0)
     local ends = GetGlobalFloat("PC2_PhaseEndsAt", 0)
@@ -268,6 +338,10 @@ local function onPhaseChange(nextMode)
     elseif nextMode == "Waiting" or nextMode == "Intermission" then
         introPos, introAngle = nil, nil
         selectedTip = nil
+        -- Force an 8% pulse on the first countdown update of each
+        -- new intermission, exactly like the supplied lobby script.
+        intermissionLastSecond = nil
+        intermissionPulse = 0
     end
 end
 
@@ -370,10 +444,9 @@ hook.Add("HUDPaint", "PC2_RoundSequenceScreen", function()
         centerLine("At least 2 players are needed to start intermission.",
             "PC2_RoundSmall", x, y + 52, gray)
     elseif state == "Intermission" then
-        local remaining = math.max(0, GetGlobalInt("PC2_TimerSeconds", 60))
-        centerLine("INTERMISSION", "PC2_RoundHeadline", x, y, white)
-        centerLine(string.format("%01d:%02d", math.floor(remaining / 60),
-            remaining % 60), "PC2_RoundMedium", x, y + 57, green)
+        local remaining = math.ceil(math.max(
+            GetGlobalInt("PC2_TimerSeconds", 60), 0))
+        drawIntermissionHUD(sw, remaining)
     elseif state == "Intro" and participant(LocalPlayer()) then
         local t = progress()
         if t < 0.15 then
@@ -433,5 +506,7 @@ hook.Add("OnReloaded", "PC2_RoundClientCleanup", function()
     screenClicker, oldSpec, dragging = false, false, false
     introPos, introAngle, spectateTarget = nil, nil, nil
     selectedTip = nil
+    intermissionLastSecond = nil
+    intermissionPulse = 0
     currentMode = ""
 end)
