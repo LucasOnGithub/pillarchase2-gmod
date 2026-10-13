@@ -270,11 +270,9 @@ hook.Add("Think", "PC2_TopPlayerListUpdate", function()
     local count = math.min(#players, MAX_VISIBLE)
     local left = math.ceil(count / 2)
     local timerSize = math.Clamp(math.Round(sh * 0.12), 96, 156)
-    -- UDim2.new(1.638, 0, 1.638, 0): scale the FULL base portrait
-    -- by 1.638 on both axes. Do not pre-shrink by 0.62: that almost
-    -- cancels out the requested enlargement (0.62 * 1.638 ~= 1).
-    -- This is computed once for every player, regardless of monster state.
-    local portraitSize = math.Round(timerSize * 0.86)
+    -- ONE base portrait and ONE UDim2 1.638x border scale for all roles;
+    -- no special smaller monster border or image math is applied.
+    local portraitSize = math.Round(timerSize * 0.86 * 0.62)
     local ring = portraitSize * BORDER_SCALE
 
     for i = 1, count do
