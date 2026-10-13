@@ -32,6 +32,13 @@ local BORDER_SCALE = 1.638
 -- No center-crop zoom: show the entire supplied EXEIcon.png image.
 local EXE_ICON_SCALE = 0.85
 
+local function showRoundHUD()
+    local ply = LocalPlayer()
+    return IsValid(ply) and ply:GetNWBool("PC2_InRound", false)
+        and not ply:GetNWBool("PC2_Eliminated", false)
+        and GetGlobalString("PC2_RoundMode", "Waiting") == "Survive"
+end
+
 local root, cards = nil, {}
 local nextRoster = 0
 local lastW, lastH = 0, 0
@@ -202,7 +209,7 @@ end
 -- Screen-space overlay paints on top of every VGUI panel, at unchanged
 -- pixel dimensions whether the card is survivor or EXE.
 hook.Add("PostRenderVGUI", "PC2_TopPlayerListForeground", function()
-    if not IsValid(root) then return end
+    if not showRoundHUD() or not IsValid(root) then return end
     if gui.IsGameUIVisible() then return end
 
     -- A depth buffer may still contain map geometry/skybox depth by the
@@ -296,7 +303,12 @@ end)
 local function roster()
     local players = {}
     for _, ply in ipairs(player.GetAll()) do
-        if IsValid(ply) and ply:IsPlayer() then players[#players + 1] = ply end
+        -- Dead participants stay in the list to display their death icons.
+        -- Late joiners and lobby spectators are never listed.
+        if IsValid(ply) and ply:IsPlayer()
+            and ply:GetNWBool("PC2_InRound", false) then
+            players[#players + 1] = ply
+        end
     end
     -- Stable ordering means portraits do not shuffle during a round.
     table.sort(players, function(a, b) return a:EntIndex() < b:EntIndex() end)
@@ -317,6 +329,12 @@ local function roster()
 end
 
 hook.Add("Think", "PC2_TopPlayerListUpdate", function()
+    if not showRoundHUD() then
+        if IsValid(root) then root:SetVisible(false) end
+        return
+    end
+    if IsValid(root) and not root:IsVisible() then root:SetVisible(true) end
+
     -- Track living/dead transitions every frame so the death sound and
     -- tween don't wait for the slower 0.25-second roster refresh.
     for _, card in ipairs(cards) do

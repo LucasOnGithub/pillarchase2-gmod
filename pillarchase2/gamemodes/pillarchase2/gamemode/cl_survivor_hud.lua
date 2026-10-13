@@ -101,6 +101,12 @@ end
 
 local function isSurvivor(ply)
     if not IsValid(ply) or not ply:IsPlayer() or not ply:Alive() then return false end
+    if GetGlobalString("PC2_RoundMode", "Waiting") ~= "Survive"
+        or not ply:GetNWBool("PC2_InRound", false)
+        or ply:GetNWBool("PC2_Eliminated", false)
+        or ply:GetNWString("PC2_RoundRole", "") ~= "Survivor" then
+        return false
+    end
     if ply:GetNWBool("PC2_IsMonster", false) then return false end
     if GAMEMODE and GAMEMODE.IsPC2Survivor then
         return GAMEMODE:IsPC2Survivor(ply)

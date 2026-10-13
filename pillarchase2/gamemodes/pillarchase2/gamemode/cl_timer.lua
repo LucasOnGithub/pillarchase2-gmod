@@ -56,6 +56,15 @@ local function ensureFont()
 end
 
 hook.Add("HUDPaint", "PC2_RoundTimerHUD", function()
+    local ply = LocalPlayer()
+    -- The lobby/intermission has its own countdown UI. The clock only
+    -- belongs to a living round participant once gameplay starts.
+    if not IsValid(ply) or not ply:GetNWBool("PC2_InRound", false)
+        or ply:GetNWBool("PC2_Eliminated", false)
+        or GetGlobalString("PC2_RoundMode", "Waiting") ~= "Survive" then
+        lastSeconds = nil
+        return
+    end
     ensureFont()
 
     -- For now these are both zero: the round handler will set them later.

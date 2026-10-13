@@ -1,6 +1,7 @@
 -- Client-side gamemode entry point.
 include("shared.lua")
 include("pc2_pills/init.lua")
+include("cl_round_flow.lua")
 include("cl_timer.lua")
 include("cl_player_list.lua")
 include("cl_survivor_hud.lua")

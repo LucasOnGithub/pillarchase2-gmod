@@ -35,6 +35,12 @@ end)
 
 -- Them hooks
 hook.Add("CalcView", "momo_calcview", function(ply, pos, ang, fov, nearZ, farZ)
+    -- Let the PC2 round intro own its staged, unobstructed EXE camera.
+    -- Normally the pill's first-person bone camera overrides CalcView.
+    if GetGlobalString("PC2_RoundMode", "Waiting") == "Intro"
+        and IsValid(ply) and ply:GetNWBool("PC2_InRound", false) then
+        return
+    end
     local ent = pk_pills.getMappedEnt(LocalPlayer())
 
     if IsValid(ent) and ply:GetViewEntity() == ply then

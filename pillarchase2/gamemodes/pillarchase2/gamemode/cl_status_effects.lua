@@ -25,7 +25,10 @@ local function ensureFonts()
 end
 
 hook.Add("HUDPaint", "PC2_BrokenBoneStatusHUD", function()
+    if GetGlobalString("PC2_RoundMode", "Waiting") ~= "Survive" then return end
     local ply = LocalPlayer()
+    if not IsValid(ply) or not ply:GetNWBool("PC2_InRound", false)
+        or ply:GetNWBool("PC2_Eliminated", false) then return end
     if not IsValid(ply) or not ply:Alive()
         or ply:GetNWBool("PC2_IsMonster", false)
         or not ply:GetNWBool("PC2_BrokenBone", false) then return end

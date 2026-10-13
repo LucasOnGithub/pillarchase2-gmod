@@ -15,6 +15,10 @@ local function stopBreathing()
 end
 
 hook.Add("Think", "PC2_WindedBreathing", function()
+    if GetGlobalString("PC2_RoundMode", "Waiting") ~= "Survive" then
+        stopBreathing()
+        return
+    end
     local ply = LocalPlayer()
     if ply ~= trackedPlayer then
         stopBreathing()
