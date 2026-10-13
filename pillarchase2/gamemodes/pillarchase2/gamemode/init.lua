@@ -6,6 +6,7 @@ AddCSLuaFile("cl_timer.lua")
 AddCSLuaFile("cl_survivor_hud.lua")
 AddCSLuaFile("cl_stamina.lua")
 AddCSLuaFile("cl_exe_hud.lua")
+AddCSLuaFile("cl_monster_vision.lua")
 AddCSLuaFile("cl_status_effects.lua")
 AddCSLuaFile("cl_exe_execution.lua")
 
