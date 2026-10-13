@@ -3,8 +3,9 @@
 if SERVER then return end
 
 local ASSETS = "Server/RoundHandler/GameGui/Top/PlrList/Plr/"
-local border = Material(ASSETS .. "Border.png", "smooth")
-local death = Material(ASSETS .. "Death.png", "smooth")
+-- Ignore world depth/skybox depth; this is 2D HUD artwork, not a world decal.
+local border = Material(ASSETS .. "Border.png", "smooth ignorez")
+local death = Material(ASSETS .. "Death.png", "smooth ignorez")
 local DIED_SOUND = "LobbyGUI/Sounds/Died.wav"
 
 -- Roblox death tween values. Death.png is drawn in the HUD foreground so
@@ -18,7 +19,7 @@ local DEATH_END_ALPHA = math.Round(255 * (1 - 0.15))
 -- Monsters use a supplied 2D portrait, never a rendered SpawnIcon.
 local exeIcon = Material(
     "Server/RoundHandler/GameGui/NewStats/SelfIcon/Renders/EXEIcon.png",
-    "smooth"
+    "smooth ignorez"
 )
 
 local GOOD = Color(91, 246, 102)
@@ -204,6 +205,11 @@ hook.Add("PostRenderVGUI", "PC2_TopPlayerListForeground", function()
     if not IsValid(root) then return end
     if gui.IsGameUIVisible() then return end
 
+    -- A depth buffer may still contain map geometry/skybox depth by the
+    -- time PostRenderVGUI fires. HUD artwork must never be tested against
+    -- that depth. Restore normal depth range after drawing.
+    cam.IgnoreZ(true)
+
         -- EXE uses ONLY the PNG artwork at 85% of the inner opening.
         for _, card in ipairs(cards) do
             local cx, cy, ring = cardCircle(card)
@@ -224,9 +230,15 @@ hook.Add("PostRenderVGUI", "PC2_TopPlayerListForeground", function()
             local cx, cy, ring = cardCircle(card)
             if cx then
                 local ink = card.danger and BAD or GOOD
+                local x, y = cx - ring * 0.5, cy - ring * 0.5
+
+                -- One-pixel dark shadow prevents the translucent border
+                -- artwork vanishing against white skies or bright lights.
+                -- Both passes use the ORIGINAL diameter: no scaling.
+                surface.SetDrawColor(8, 10, 12, 235)
+                surface.DrawTexturedRect(x + 1, y + 1, ring, ring)
                 surface.SetDrawColor(ink.r, ink.g, ink.b, 255)
-                surface.DrawTexturedRect(
-                    cx - ring * 0.5, cy - ring * 0.5, ring, ring)
+                surface.DrawTexturedRect(x, y, ring, ring)
             end
         end
 
@@ -252,6 +264,8 @@ hook.Add("PostRenderVGUI", "PC2_TopPlayerListForeground", function()
                     cx, cy, size, size, rotation)
             end
         end
+
+    cam.IgnoreZ(false)
 end)
 
 -- Diagnostics: run pc2_topbar_debug before and after morphing to print
@@ -261,8 +275,9 @@ concommand.Add("pc2_topbar_debug", function()
     local portrait = math.Round(baseTimer * 0.86 * 0.62)
     local calculatedRing = portrait * BORDER_SCALE
     print(string.format(
-        "[PC2 topbar] screen=%dx%d timer=%d portrait=%d border=%.2fpx",
-        ScrW(), ScrH(), baseTimer, portrait, calculatedRing))
+        "[PC2 topbar] screen=%dx%d timer=%d portrait=%d border=%.2fpx ignorez=%s",
+        ScrW(), ScrH(), baseTimer, portrait, calculatedRing,
+        tostring(border:GetInt("$ignorez"))))
     local count = 0
     for _, card in ipairs(cards) do
         if IsValid(card) and card:IsVisible() then
