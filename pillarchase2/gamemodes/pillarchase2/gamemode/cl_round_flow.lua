@@ -16,6 +16,117 @@ local stageFontsH = 0
 local noiseLast = 0
 local noise = {}
 
+-- The Roblox original chooses a random ImageLabel under
+-- LobbyGUI.Tips.EXE, then fades it and its TextLabel descendants.
+-- The TextLabel.Text values live in the GUI instances, not the script.
+-- These gameplay descriptions are provisional until the originals arrive.
+local EXE_TIP_DIR = "LobbyGUI/Tips/EXE/"
+local EXE_TIP_TEXT = {
+    {
+        keyword = "Too Slow",
+        title = "TOO SLOW",
+        text = "EXE can charge forward and grab survivors. Get out of his path!"
+    },
+    {
+        keyword = "Thorny Grave",
+        title = "THORNY GRAVE",
+        text = "Watch for EXE's traps on the ground. Struggle to escape if caught!"
+    }
+}
+local selectedTip
+local warnedMissingTipArt = false
+
+local function loadEXETip()
+    local dir = "materials/" .. EXE_TIP_DIR
+    -- Loose .png/.jpg files in gamemodes/pillarchase2/content/materials
+    -- are found by the GAME search path on installed GMod clients.
+    local paths, used = {}, {}
+    for _, extension in ipairs({"png", "jpg", "jpeg", "vmt"}) do
+        local found = file.Find(dir .. "*." .. extension, "GAME") or {}
+        for _, name in ipairs(found) do
+            if not used[name] then
+                used[name] = true
+                paths[#paths + 1] = name
+            end
+        end
+    end
+    table.sort(paths)
+    local chosen = #paths > 0 and math.random(#paths) or 0
+    local fileName = paths[chosen]
+    if not fileName then
+        if not warnedMissingTipArt then
+            warnedMissingTipArt = true
+            print("[PC2 Tips] No imported images found in materials/"
+                .. EXE_TIP_DIR
+                .. " (they must be installed/mounted on this client).")
+        end
+        local entry = EXE_TIP_TEXT[math.random(#EXE_TIP_TEXT)]
+        return {material = nil, title = entry.title, text = entry.text}
+    end
+
+    local lowered = string.lower(fileName)
+    -- Support descriptive files and the common Roblox 1/2 or Tip1/Tip2
+    -- naming scheme. Unnamed images rotate between the two subjects.
+    local index
+    if string.find(lowered, "thorn", 1, true)
+        or string.find(lowered, "grave", 1, true)
+        or string.find(lowered, "tip2", 1, true)
+        or string.find(lowered, "2.", 1, true) then
+        index = 2
+    elseif string.find(lowered, "slow", 1, true)
+        or string.find(lowered, "tip1", 1, true)
+        or string.find(lowered, "1.", 1, true) then
+        index = 1
+    else
+        index = ((chosen - 1) % #EXE_TIP_TEXT) + 1
+    end
+    local entry = EXE_TIP_TEXT[index]
+    local materialPath = EXE_TIP_DIR .. fileName
+    local mat = Material(materialPath, "smooth")
+    if mat:IsError() then
+        print("[PC2 Tips] Could not load material: " .. materialPath)
+        mat = nil
+    end
+    return {
+        material = mat,
+        fileName = fileName,
+        title = entry.title,
+        text = entry.text
+    }
+end
+
+local function drawEXETip(sw, sh, alpha)
+    if not selectedTip then return end
+    local art = selectedTip.material
+    if art then
+        -- Preserve the source image's aspect ratio instead of stretching it.
+        local maxW, maxH = sw * 0.76, sh * 0.64
+        local w, h = math.max(1, art:Width()), math.max(1, art:Height())
+        local scale = math.min(maxW / w, maxH / h)
+        local imageW, imageH = w * scale, h * scale
+        surface.SetDrawColor(255, 255, 255, alpha)
+        surface.SetMaterial(art)
+        surface.DrawTexturedRect((sw - imageW) * 0.5,
+            sh * 0.46 - imageH * 0.5, imageW, imageH)
+    end
+
+    -- The TextLabels in the original Roblox GUI were independent
+    -- descendants of each ImageLabel, fading alongside the image.
+    -- Keep captions separate so the source PNG remains unchanged.
+    local centerX = sw * 0.5
+    local captionY = sh * 0.81
+    local captionW = math.min(sw * 0.76, 1160 * sh / 1080)
+    surface.SetDrawColor(0, 0, 0, math.floor(alpha * 0.72))
+    surface.DrawRect(centerX - captionW * 0.5,
+        captionY - sh * 0.055, captionW, sh * 0.12)
+    centerLine(selectedTip.title, "PC2_RoundMedium",
+        centerX, captionY - sh * 0.023,
+        Color(110, 245, 123), alpha)
+    centerLine(selectedTip.text, "PC2_RoundSmall",
+        centerX, captionY + sh * 0.02,
+        Color(238, 240, 247), alpha)
+end
+
 net.Receive("PC2_RoundIntroCamera", function()
     introPos = net.ReadVector()
     introAngle = net.ReadAngle()
@@ -131,6 +242,7 @@ local function onPhaseChange(nextMode)
         surface.PlaySound("Map/Intro/Low.wav")
         surface.PlaySound("LobbyGUI/Sounds/DarkFade.wav")
     elseif nextMode == "Tips" and participant(ply) then
+        selectedTip = loadEXETip()
         surface.PlaySound("LobbyGUI/Sounds/DarkFade.wav")
     elseif nextMode == "Reveal" and participant(ply) then
         surface.PlaySound("LobbyGUI/Sounds/Fade1.wav")
@@ -139,6 +251,7 @@ local function onPhaseChange(nextMode)
         surface.PlaySound("LobbyGUI/Sounds/DarkFade.wav")
     elseif nextMode == "Waiting" or nextMode == "Intermission" then
         introPos, introAngle = nil, nil
+        selectedTip = nil
     end
 end
 
@@ -258,14 +371,16 @@ hook.Add("HUDPaint", "PC2_RoundSequenceScreen", function()
             staticEffect(math.min(1, (t - 0.46) * 8))
         end
     elseif state == "Tips" and participant(LocalPlayer()) then
+        -- Solid black backing hides the delayed EXE morph and teleport.
+        -- The original tip ImageLabel and its TextLabels fade together:
+        -- 0.6s fade in; fade the tip out near the end of the five seconds.
         shade(255)
         local t = progress()
-        local opacity = 255 * math.Clamp(math.min(t * 6, (1 - t) * 6), 0, 1)
-        centerLine("TIP", "PC2_RoundSmall", x, y - 56, green, opacity)
-        centerLine("Listen closely. Use your surroundings.",
-            "PC2_RoundMedium", x, y, white, opacity)
-        centerLine("Survivors spawn far from EXE. Keep moving.",
-            "PC2_RoundSmall", x, y + 55, gray, opacity)
+        local secondsLeft = math.max(0,
+            GetGlobalFloat("PC2_PhaseEndsAt", CurTime()) - CurTime())
+        local fadedIn = math.Clamp((CurTime() - modeStarted) / 0.6, 0, 1)
+        local fadedOut = math.Clamp(secondsLeft / 1.0, 0, 1)
+        drawEXETip(sw, sh, math.Round(255 * math.min(fadedIn, fadedOut)))
     elseif state == "Reveal" and participant(LocalPlayer()) then
         local t = progress()
         shade(255 * math.Clamp(1 - t * 3.5, 0, 1))
@@ -296,5 +411,6 @@ hook.Add("OnReloaded", "PC2_RoundClientCleanup", function()
     if screenClicker then gui.EnableScreenClicker(false) end
     screenClicker, oldSpec, dragging = false, false, false
     introPos, introAngle, spectateTarget = nil, nil, nil
+    selectedTip = nil
     currentMode = ""
 end)
