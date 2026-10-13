@@ -16,13 +16,16 @@ local stageFontsH = 0
 -- Exact static textures imported from the original intro UI.
 -- The "FirstStatic" and "StaticUI" layers each contain two noise
 -- frames. Alternate the actual PNG frames; do not synthesize stripes.
+-- Material() may return additional values on this GMod build.
+-- Parentheses force a single IMaterial result for EACH table entry,
+-- particularly the last expression (Lua otherwise expands its returns).
 local firstStaticFrames = {
-    Material("Map/Intro/FirstStatic1.png", "smooth"),
-    Material("Map/Intro/FirstStatic2.png", "smooth")
+    (Material("Map/Intro/FirstStatic1.png", "smooth")),
+    (Material("Map/Intro/FirstStatic2.png", "smooth"))
 }
 local staticUIFrames = {
-    Material("Map/Intro/StaticUI1.png", "smooth"),
-    Material("Map/Intro/StaticUI2.png", "smooth")
+    (Material("Map/Intro/StaticUI1.png", "smooth")),
+    (Material("Map/Intro/StaticUI2.png", "smooth"))
 }
 local missingStaticReported = false
 
@@ -232,7 +235,9 @@ local function drawImportedStatic(frames, alpha)
     -- faint (Roblox ImageTransparency = 0.68); StaticUI takes over for
     -- the strong static-out at the end of the intro.
     local frame = frames[(math.floor(RealTime() * 20) % #frames) + 1]
-    if frame:IsError() then
+    -- Never index a numeric texture ID or malformed frame as IMaterial;
+    -- an invalid frame should log once, not throw every HUDPaint frame.
+    if not frame or type(frame) == "number" or frame:IsError() then
         if not missingStaticReported then
             missingStaticReported = true
             print("[PC2 Intro] Missing original static materials under "
