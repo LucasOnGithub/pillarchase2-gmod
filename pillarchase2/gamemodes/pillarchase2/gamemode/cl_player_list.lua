@@ -8,8 +8,6 @@ local death = Material(ASSETS .. "Death.png", "smooth")
 
 local GOOD = Color(91, 246, 102)
 local BAD = Color(250, 76, 104)
-local WHITE = Color(255, 255, 255)
-local BLACK = Color(0, 0, 0, 210)
 local MODEL_EXE = "models/noodles/pillarchase2/exe.mdl"
 local MAX_VISIBLE = 10
 
@@ -17,50 +15,12 @@ local root, cards = nil, {}
 local nextRoster = 0
 local lastW, lastH = 0, 0
 
-local function makeFonts()
-    local size = math.Clamp(math.Round(ScrH() * 0.020), 15, 26)
-    surface.CreateFont("PC2_TopPlayerNumber", {
-        font = "Trebuchet MS", size = size, weight = 900,
-        antialias = true, shadow = true
-    })
-end
-
--- Every model portrait holds a frozen pose, matching the still images
--- in the Roblox top bar without requiring separate PNGs for every player.
+-- Match Sandbox's playermodel selector: SpawnIcon:SetModel(model) supplies
+-- the cached, static model thumbnail, not a live 3D preview.
 local function setPortraitModel(card, model)
     if not model or model == "" or card.modelName == model then return end
     card.modelName = model
     card.avatar:SetModel(model)
-
-    local modelEnt = card.avatar.Entity
-    if not IsValid(modelEnt) then return end
-
-    local idle = modelEnt:LookupSequence("idle_all_01")
-    if idle < 0 then idle = modelEnt:SelectWeightedSequence(ACT_IDLE) end
-    if idle and idle >= 0 then modelEnt:ResetSequence(idle) end
-    modelEnt:SetCycle(0)
-    modelEnt:SetPlaybackRate(0)
-    modelEnt:SetAngles(Angle(0, 24, 0))
-
-    local mins, maxs = modelEnt:GetRenderBounds()
-    local tall = math.max(40, maxs.z - mins.z)
-    local center = (mins + maxs) * 0.5
-    local look = Vector(center.x, center.y, mins.z + tall * 0.75)
-    card.avatar:SetFOV(36)
-    card.avatar:SetLookAt(look)
-    card.avatar:SetCamPos(look + Vector(tall * 0.66, -tall * 0.58, tall * 0.055))
-end
-
--- Tiny white figures beneath each circular portrait, matching the
--- two standing/running silhouettes from the reference artwork.
-local function drawRunner(x, y, scale, ink)
-    surface.SetDrawColor(ink.r, ink.g, ink.b, ink.a)
-    draw.RoundedBox(scale * 2, x - scale * 2, y, scale * 4, scale * 4, ink)
-    surface.DrawLine(x, y + scale * 4, x + scale * 2, y + scale * 10)
-    surface.DrawLine(x - scale, y + scale * 6, x - scale * 6, y + scale * 9)
-    surface.DrawLine(x + scale, y + scale * 6, x + scale * 5, y + scale * 4)
-    surface.DrawLine(x + scale * 2, y + scale * 10, x - scale * 3, y + scale * 14)
-    surface.DrawLine(x + scale * 2, y + scale * 10, x + scale * 7, y + scale * 13)
 end
 
 local function createCard()
@@ -69,12 +29,10 @@ local function createCard()
     card:SetKeyboardInputEnabled(false)
     card:SetPaintBackground(false)
 
-    card.avatar = vgui.Create("DModelPanel", card)
+    card.avatar = vgui.Create("SpawnIcon", card)
     card.avatar:SetMouseInputEnabled(false)
     card.avatar:SetKeyboardInputEnabled(false)
-    card.avatar:SetPaintBackground(false)
-    card.avatar.LayoutEntity = function() end
-    card.avatar:SetAmbientLight(Color(165, 165, 165))
+    card.avatar:SetSize(64, 64)
 
     card.Paint = function(self, w, h)
         local ring = self.ring or 64
@@ -111,18 +69,8 @@ local function createCard()
                 size, size)
         end
 
-        if self.score ~= nil then
-            draw.SimpleTextOutlined(tostring(self.score),
-                "PC2_TopPlayerNumber", cx - ring * 0.46, cy - ring * 0.40,
-                WHITE, TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER, 2, BLACK)
-        end
-
-        local unit = math.max(0.65, ring / 82)
-        local iconY = cy + ring * 0.43
-        local silhouette = self.dead
-            and Color(185, 185, 185, 130) or Color(255, 255, 255, 238)
-        drawRunner(cx - ring * 0.18, iconY, unit, silhouette)
-        drawRunner(cx + ring * 0.09, iconY, unit, silhouette)
+        -- Monster-chance numbers and the small people indicators are
+        -- intentionally omitted until the actual chance system exists.
     end
 
     cards[#cards + 1] = card
@@ -140,23 +88,8 @@ local function updateCard(card, ply)
     card.player = ply
     card.dead = not ply:Alive()
     card.danger = card.dead or ply:GetNWBool("PC2_IsMonster", false)
-    -- The proper level will appear when the round/level system supplies it;
-    -- until then, use the engine's real player score rather than fake levels.
-    card.score = ply:GetNWInt("PC2_Level", ply:Frags())
-
+    -- Use the exact thumbnail system from Sandbox's player model selector.
     setPortraitModel(card, portraitModel(ply))
-    local model = card.avatar.Entity
-    if not IsValid(model) then return end
-
-    if not ply:GetNWBool("PC2_IsMonster", false) then
-        model:SetSkin(ply:GetSkin())
-        for i = 0, math.min(ply:GetNumBodyGroups() - 1, 30) do
-            model:SetBodygroup(i, ply:GetBodygroup(i))
-        end
-        model.GetPlayerColor = function()
-            return IsValid(ply) and ply:GetPlayerColor() or Vector(1, 1, 1)
-        end
-    end
 end
 
 local function layoutCard(card, index, side, numLeft, ring, timerSize)
@@ -170,7 +103,7 @@ local function layoutCard(card, index, side, numLeft, ring, timerSize)
     local x = center + side * dist
 
     local timerCenterY = 12 + timerSize * 0.5
-    local centerY = timerCenterY - timerSize * 0.04
+    local centerY = timerCenterY -- portraits level with the clock
     local width = math.Round(ring * 1.44)
     local height = math.Round(ring * 1.40)
     card:SetSize(width, height)
@@ -196,7 +129,6 @@ local function ensureRoot()
     root.Paint = function() end
     cards = {}
     lastW, lastH = 0, 0
-    makeFonts()
 end
 
 local function roster()
@@ -233,15 +165,15 @@ hook.Add("Think", "PC2_TopPlayerListUpdate", function()
     if lastW ~= sw or lastH ~= sh then
         root:SetSize(sw, math.max(150, math.Round(sh * 0.23)))
         root:SetPos(0, 0)
-        makeFonts()
-        lastW, lastH = sw, sh
+            lastW, lastH = sw, sh
     end
 
     local players = roster()
     local count = math.min(#players, MAX_VISIBLE)
     local left = math.ceil(count / 2)
     local timerSize = math.Clamp(math.Round(sh * 0.12), 96, 156)
-    local ring = math.Clamp(math.Round(timerSize * 0.71), 58, 110)
+    -- Almost as large as the stopwatch, but still slightly smaller.
+    local ring = math.Round(timerSize * 0.86)
 
     for i = 1, count do
         local card = cards[i] or createCard()
