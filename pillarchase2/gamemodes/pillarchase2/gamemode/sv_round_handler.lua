@@ -78,7 +78,10 @@ local function lobbyPlayer(ply)
     ply:SetNWBool("PC2_InRound", false)
     ply:SetNWBool("PC2_Eliminated", false)
     ply:SetNWString("PC2_RoundRole", "Lobby")
-    if not ply:Alive() then ply:Spawn() end
+    -- Respawn even if still technically alive: late joiners entered
+    -- OBS_MODE_ROAMING without dying. Spawning guarantees normal walking,
+    -- a real player model and a lobby spawn instead of an observer origin.
+    ply:Spawn()
     -- The EXE pill raises its owner's maximum HP to 9999. Fully reset
     -- both values when returning to the lobby for the next survivor round.
     ply:SetMaxHealth(100)
