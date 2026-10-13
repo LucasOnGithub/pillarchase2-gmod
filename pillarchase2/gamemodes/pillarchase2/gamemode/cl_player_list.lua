@@ -34,11 +34,20 @@ local function sineInOut(t)
     return 0.5 - math.cos(t * math.pi) * 0.5
 end
 
--- Start the tween only when an existing player transitions from alive to
--- dead. A player who joins while already dead gets a settled overlay,
--- without replaying sounds or animations for every HUD refresh.
+-- EXE marks the victim as being executed as soon as KillPC2 starts.
+-- Show the dead-state portrait immediately, while the victim stays alive
+-- at 1 HP until the jumpscare's finishing blow at 2.04 seconds.
+-- When their actual death follows, the same state stays active so
+-- the death icon and sound do not play a second time.
+local function isPortraitDead(ply)
+    return not ply:Alive()
+        or ply:GetNWBool("PC2_EXEBeingExecuted", false)
+end
+
+-- A player entering the HUD already dead gets a settled overlay; all
+-- subsequent alive -> dead transitions start the original animation.
 local function updateDeathState(card, ply)
-    local deadNow = not ply:Alive()
+    local deadNow = isPortraitDead(ply)
     if card.player ~= ply then
         card.deathStarted = deadNow and (RealTime() - DEATH_SIZE_TIME) or nil
     elseif deadNow and not card.dead then
