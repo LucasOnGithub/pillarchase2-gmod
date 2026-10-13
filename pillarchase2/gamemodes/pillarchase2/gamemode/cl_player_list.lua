@@ -15,11 +15,9 @@ local DEATH_START_SIZE = 5.0
 local DEATH_END_SIZE = 1.1
 local DEATH_START_ROTATION = 125
 local DEATH_END_ALPHA = math.Round(255 * (1 - 0.15))
--- Monsters use a supplied 2D portrait, never a rendered SpawnIcon.
-local exeIcon = Material(
-    "Server/RoundHandler/GameGui/NewStats/SelfIcon/Renders/EXEIcon.png",
-    "smooth"
-)
+-- Monsters use an image instead of a SpawnIcon/3D model preview.
+-- Both types share the exact same portrait rectangle and border geometry.
+local EXE_ICON = "Server/RoundHandler/GameGui/NewStats/SelfIcon/Renders/EXEIcon.png"
 
 local GOOD = Color(91, 246, 102)
 local BAD = Color(250, 76, 104)
@@ -83,6 +81,14 @@ local function createCard()
     card.avatar:SetKeyboardInputEnabled(false)
     card.avatar:SetSize(64, 64)
 
+    -- A DImage is a flat PNG: no viewport or model rendering for EXE.
+    -- Its layout is identical to the survivor SpawnIcon. This prevents
+    -- switching roles from changing the visible portrait's scale.
+    card.monsterIcon = vgui.Create("DImage", card)
+    card.monsterIcon:SetImage(EXE_ICON)
+    card.monsterIcon:SetMouseInputEnabled(false)
+    card.monsterIcon:SetVisible(false)
+
     card.Paint = function(self, w, h)
         local ring = self.ring or 64
         local cx, cy = w * 0.5, ring * 0.64
@@ -100,15 +106,8 @@ local function createCard()
         bloom = ring * 1.16
         surface.DrawTexturedRect(cx - bloom / 2, cy - bloom / 2, bloom, bloom)
 
-        -- Draw EXE's original 2D UI portrait INSIDE the border opening.
-        -- This never renders the monster model or generates a SpawnIcon.
-        if self.isEXE then
-            local hole = ring / BORDER_SCALE
-            surface.SetMaterial(exeIcon)
-            surface.SetDrawColor(255, 255, 255, 255)
-            surface.DrawTexturedRect(cx - hole * 0.5, cy - hole * 0.5,
-                hole, hole)
-        end
+        -- The SpawnIcon/DImage children draw here at the SAME size for
+        -- survivors and EXE. PaintOver puts the tinted border above both.
     end
 
     card.PaintOver = function(self, w, h)
@@ -141,6 +140,7 @@ local function updateCard(card, ply)
     -- an artwork icon; future monsters can supply their own render images.
     -- Survivors retain the static Sandbox model-selector thumbnails.
     card.avatar:SetVisible(not isMonster)
+    card.monsterIcon:SetVisible(card.isEXE)
     if not isMonster then
         setPortraitModel(card, ply:GetModel())
     end
@@ -165,11 +165,14 @@ local function layoutCard(card, index, side, numLeft, ring, timerSize, portraitS
         math.Round(centerY - ring * 0.64))
     card.ring = ring
 
-    -- Keep model entirely inside the artwork's ring opening. The border
-    -- itself has a transparent center and paints ABOVE this portrait.
+    -- Both portrait types share one square, centred in the same ring.
+    -- Switching between survivor and monster changes only visibility.
+    local portraitX = math.Round((width - portraitSize) * 0.5)
+    local portraitY = math.Round(ring * 0.64 - portraitSize * 0.5)
     card.avatar:SetSize(portraitSize, portraitSize)
-    card.avatar:SetPos(math.Round((width - portraitSize) * 0.5),
-        math.Round(ring * 0.64 - portraitSize * 0.5))
+    card.avatar:SetPos(portraitX, portraitY)
+    card.monsterIcon:SetSize(portraitSize, portraitSize)
+    card.monsterIcon:SetPos(portraitX, portraitY)
 end
 
 local function ensureRoot()
@@ -267,8 +270,8 @@ hook.Add("Think", "PC2_TopPlayerListUpdate", function()
     local count = math.min(#players, MAX_VISIBLE)
     local left = math.ceil(count / 2)
     local timerSize = math.Clamp(math.Round(sh * 0.12), 96, 156)
-    -- Keep the existing portrait size. Scale its border exactly as the
-    -- Roblox UDim2 (1.638, 0, 1.638, 0) would: relative to portrait.
+    -- ONE base portrait and ONE UDim2 1.638x border scale for all roles;
+    -- no special smaller monster border or image math is applied.
     local portraitSize = math.Round(timerSize * 0.86 * 0.62)
     local ring = portraitSize * BORDER_SCALE
 
