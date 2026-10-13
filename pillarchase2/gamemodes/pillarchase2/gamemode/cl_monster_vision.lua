@@ -44,9 +44,40 @@ hook.Add("RenderScreenspaceEffects", "PC2_MonsterLowLightVision", function()
 end)
 
 -- Screen brightening alone cannot reveal walls/models that the map
--- rendered pure black. A small client-only, shadowless fill light around
--- the monster's camera makes nearby geometry visible on very dark maps.
+-- rendered pure black. This client-only, shadowless fill light follows
+-- the MONSTER MODEL'S HEAD rather than a point far in front of the camera.
 -- It expires promptly on unmorph, death or when the setting is disabled.
+local function monsterHeadPosition(ply)
+    local pill = ply:GetNWEntity("PC2_ActiveMonsterPill")
+    if IsValid(pill) and pill.GetPuppet then
+        local puppet = pill:GetPuppet()
+        if IsValid(puppet) then
+            -- EXE uses "Head"; Valve-style monster models may use these.
+            local bone = puppet:LookupBone("Head")
+                or puppet:LookupBone("ValveBiped.Bip01_Head1")
+                or puppet:LookupBone("head")
+            if bone ~= nil and bone >= 0 then
+                local pos = puppet:GetBonePosition(bone)
+                if isvector(pos) and not pos:IsZero()
+                    and pos:DistToSqr(puppet:GetPos()) > 1 then
+                    return pos
+                end
+
+                local matrix = puppet:GetBoneMatrix(bone)
+                if matrix then
+                    pos = matrix:GetTranslation()
+                    if isvector(pos) and not pos:IsZero() then
+                        return pos
+                    end
+                end
+            end
+        end
+    end
+
+    -- Covers monsters without a networked puppet and its initial spawn.
+    return ply:EyePos()
+end
+
 local nextLight = 0
 hook.Add("Think", "PC2_MonsterLowLightFill", function()
     local ply = monsterViewer()
@@ -62,12 +93,18 @@ hook.Add("Think", "PC2_MonsterLowLightFill", function()
     local light = DynamicLight(ply:EntIndex() + 32768)
     if not light then return end
 
-    light.pos = ply:EyePos() + ply:EyeAngles():Forward() * 100
+    -- A short horizontal offset keeps the light outside EXE's face,
+    -- without moving it above/below head level when looking up or down.
+    local head = monsterHeadPosition(ply)
+    local levelForward = Angle(0, ply:EyeAngles().y, 0):Forward()
+    light.pos = head + levelForward * 22
     light.r = 235
     light.g = 240
     light.b = 255
     light.brightness = 1.25 * amount
-    light.size = 520 + 80 * (amount - 1)
+    -- Roughly twice the previous ~520-unit reach, especially useful on
+    -- dark PC2 maps. Only this client's monster view receives the light.
+    light.size = 1200 + 180 * (amount - 1)
     light.decay = 0
     light.dietime = now + 0.12
     light.noworld = false
