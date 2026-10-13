@@ -296,10 +296,11 @@ hook.Add("Think", "PC2_TopPlayerListUpdate", function()
     local count = math.min(#players, MAX_VISIBLE)
     local left = math.ceil(count / 2)
     local timerSize = math.Clamp(math.Round(sh * 0.12), 96, 156)
-    -- Border diameter depends ONLY on screen height, never how many
-    -- players have joined or whether a card is EXE or a survivor.
-    -- Preserve the survivor size that was correct before this bug.
-    local portraitSize = math.Round(timerSize * 0.86 * 0.62)
+    -- Roblox UDim2.new(1.638, 0, 1.638, 0) applies to the ORIGINAL
+    -- portrait square, not a square reduced to 62% beforehand. That
+    -- old factor nearly cancelled out the 1.638 scale and left tiny
+    -- borders. Keep this independent of roster size and monster role.
+    local portraitSize = math.Round(timerSize * 0.86)
     local ring = portraitSize * BORDER_SCALE
 
     for i = 1, count do
